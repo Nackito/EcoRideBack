@@ -8,8 +8,27 @@ use Doctrine\Common\Collections\Collection;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Validator\Constraints as Assert;
+use OpenApi\Attributes as OA;
 
 #[ORM\Entity(repositoryClass: RideRepository::class)]
+#[OA\Schema(
+  schema: 'Ride',
+  title: 'Trajet',
+  description: 'Entité représentant un trajet de covoiturage',
+  type: 'object',
+  properties: [
+    new OA\Property(property: 'id', type: 'integer', description: 'Identifiant unique du trajet', example: 1),
+    new OA\Property(property: 'origin', type: 'string', description: 'Lieu de départ', example: 'Paris'),
+    new OA\Property(property: 'destination', type: 'string', description: 'Lieu d\'arrivée', example: 'Lyon'),
+    new OA\Property(property: 'departureTime', type: 'string', format: 'date-time', description: 'Heure de départ', example: '2023-12-25T14:30:00'),
+    new OA\Property(property: 'availableSeats', type: 'integer', description: 'Nombre de places disponibles', example: 3),
+    new OA\Property(property: 'price', type: 'number', format: 'float', description: 'Prix par personne', example: 25.50),
+    new OA\Property(property: 'description', type: 'string', description: 'Description du trajet', example: 'Trajet direct, non-fumeur'),
+    new OA\Property(property: 'status', type: 'string', enum: ['active', 'completed', 'cancelled'], description: 'Statut du trajet', example: 'active'),
+    new OA\Property(property: 'createdAt', type: 'string', format: 'date-time', description: 'Date de création'),
+    new OA\Property(property: 'updatedAt', type: 'string', format: 'date-time', description: 'Date de modification')
+  ]
+)]
 class Ride
 {
   #[ORM\Id]

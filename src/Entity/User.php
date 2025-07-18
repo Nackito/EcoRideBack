@@ -10,9 +10,31 @@ use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface;
 use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Validator\Constraints as Assert;
+use OpenApi\Attributes as OA;
 
 #[ORM\Entity(repositoryClass: UserRepository::class)]
 #[ORM\UniqueConstraint(name: 'UNIQ_IDENTIFIER_EMAIL', fields: ['email'])]
+#[OA\Schema(
+    schema: 'User',
+    title: 'Utilisateur',
+    description: 'Entité représentant un utilisateur de la plateforme de covoiturage',
+    type: 'object',
+    properties: [
+        new OA\Property(property: 'id', type: 'integer', description: 'Identifiant unique de l\'utilisateur', example: 1),
+        new OA\Property(property: 'email', type: 'string', format: 'email', description: 'Adresse email', example: 'user@example.com'),
+        new OA\Property(property: 'firstName', type: 'string', description: 'Prénom', example: 'John'),
+        new OA\Property(property: 'lastName', type: 'string', description: 'Nom de famille', example: 'Doe'),
+        new OA\Property(property: 'phone', type: 'string', description: 'Numéro de téléphone', example: '+33123456789'),
+        new OA\Property(property: 'birthDate', type: 'string', format: 'date', description: 'Date de naissance', example: '1990-01-15'),
+        new OA\Property(property: 'bio', type: 'string', description: 'Biographie', example: 'Passionné de covoiturage'),
+        new OA\Property(property: 'roles', type: 'array', items: new OA\Items(type: 'string'), description: 'Rôles de l\'utilisateur'),
+        new OA\Property(property: 'isVerified', type: 'boolean', description: 'Compte vérifié', example: true),
+        new OA\Property(property: 'rating', type: 'number', format: 'float', description: 'Note moyenne', example: 4.5),
+        new OA\Property(property: 'totalRides', type: 'integer', description: 'Nombre total de trajets', example: 25),
+        new OA\Property(property: 'createdAt', type: 'string', format: 'date-time', description: 'Date de création'),
+        new OA\Property(property: 'updatedAt', type: 'string', format: 'date-time', description: 'Date de modification')
+    ]
+)]
 class User implements UserInterface, PasswordAuthenticatedUserInterface
 {
     #[ORM\Id]
