@@ -5,8 +5,24 @@ namespace App\Entity;
 use App\Repository\CarRepository;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
+use OpenApi\Attributes as OA;
 
 #[ORM\Entity(repositoryClass: CarRepository::class)]
+#[OA\Schema(
+    schema: 'Car',
+    title: 'Véhicule',
+    description: 'Entité représentant un véhicule utilisé pour le covoiturage',
+    type: 'object',
+    properties: [
+        new OA\Property(property: 'id', type: 'integer', description: 'Identifiant unique du véhicule', example: 1),
+        new OA\Property(property: 'modele', type: 'string', description: 'Modèle du véhicule', example: 'Peugeot 308'),
+        new OA\Property(property: 'immatriculation', type: 'string', description: 'Numéro d\'immatriculation', example: 'AB-123-CD'),
+        new OA\Property(property: 'energie', type: 'string', description: 'Type d\'énergie du véhicule', example: 'Essence'),
+        new OA\Property(property: 'color', type: 'string', description: 'Couleur du véhicule', example: 'Bleu'),
+        new OA\Property(property: 'date_first_immatriculation', type: 'string', format: 'date', description: 'Date de première immatriculation', example: '2020-01-15'),
+        new OA\Property(property: 'createdAt', type: 'string', format: 'date-time', description: 'Date de création', example: '2023-01-01T10:00:00Z')
+    ]
+)]
 class Car
 {
     #[ORM\Id]
