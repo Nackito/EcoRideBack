@@ -89,10 +89,18 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(nullable: true)]
     private ?int $totalRides = 0;
 
+    /**
+     * @var Collection<int, Role>
+     */
+    #[ORM\ManyToMany(targetEntity: Role::class, inversedBy: 'users')]
+    #[ORM\JoinTable(name: 'user_role')]
+    private Collection $userRoles;
+
     public function __construct()
     {
         $this->ridesAsDriver = new ArrayCollection();
         $this->bookings = new ArrayCollection();
+        $this->userRoles = new ArrayCollection();
         $this->createdAt = new \DateTimeImmutable();
         $this->updatedAt = new \DateTimeImmutable();
     }
@@ -133,6 +141,12 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function getRoles(): array
     {
         $roles = $this->roles;
+
+        // Ajouter les rôles depuis la relation Many-to-Many
+        foreach ($this->userRoles as $userRole) {
+            $roles[] = $userRole->getLibelle();
+        }
+
         // guarantee every user at least has ROLE_USER
         $roles[] = 'ROLE_USER';
 
@@ -379,6 +393,49 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function getFullName(): string
     {
         return $this->firstName . ' ' . $this->lastName;
+    }
+
+    /**
+     * @return Collection<int, Role>
+     */
+    public function getUserRoles(): Collection
+    {
+        return $this->userRoles;
+    }
+
+    public function addUserRole(Role $userRole): static
+    {
+        if (!$this->userRoles->contains($userRole)) {
+            $this->userRoles->add($userRole);
+            $this->updatedAt = new \DateTimeImmutable();
+        }
+
+        return $this;
+    }
+
+    public function removeUserRole(Role $userRole): static
+    {
+        if ($this->userRoles->removeElement($userRole)) {
+            $this->updatedAt = new \DateTimeImmutable();
+        }
+
+        return $this;
+    }
+
+    /**
+     * Vérifie si l'utilisateur a un rôle spécifique
+     */
+    public function hasRole(string $role): bool
+    {
+        return in_array($role, $this->getRoles());
+    }
+
+    /**
+     * Vérifie si l'utilisateur a un des rôles spécifiés
+     */
+    public function hasAnyRole(array $roles): bool
+    {
+        return !empty(array_intersect($roles, $this->getRoles()));
     }
 
     public function getAge(): ?int
