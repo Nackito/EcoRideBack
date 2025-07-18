@@ -14,6 +14,7 @@ use OpenApi\Attributes as OA;
 
 #[ORM\Entity(repositoryClass: UserRepository::class)]
 #[ORM\UniqueConstraint(name: 'UNIQ_IDENTIFIER_EMAIL', fields: ['email'])]
+#[ORM\UniqueConstraint(name: 'UNIQ_IDENTIFIER_PSEUDO', fields: ['pseudo'])]
 #[OA\Schema(
     schema: 'User',
     title: 'Utilisateur',
@@ -22,6 +23,7 @@ use OpenApi\Attributes as OA;
     properties: [
         new OA\Property(property: 'id', type: 'integer', description: 'Identifiant unique de l\'utilisateur', example: 1),
         new OA\Property(property: 'email', type: 'string', format: 'email', description: 'Adresse email', example: 'user@example.com'),
+        new OA\Property(property: 'pseudo', type: 'string', description: 'Pseudo de l\'utilisateur', example: 'john_doe'),
         new OA\Property(property: 'firstName', type: 'string', description: 'Prénom', example: 'John'),
         new OA\Property(property: 'lastName', type: 'string', description: 'Nom de famille', example: 'Doe'),
         new OA\Property(property: 'phone', type: 'string', description: 'Numéro de téléphone', example: '+33123456789'),
@@ -46,6 +48,12 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[Assert\Email]
     #[Assert\NotBlank]
     private ?string $email = null;
+
+    #[ORM\Column(length: 50)]
+    #[Assert\NotBlank]
+    #[Assert\Length(min: 3, max: 50)]
+    #[Assert\Regex(pattern: '/^[a-zA-Z0-9_.-]+$/', message: 'Le pseudo ne peut contenir que des lettres, chiffres, tirets, points et underscores')]
+    private ?string $pseudo = null;
 
     /**
      * @var list<string> The user roles
@@ -140,6 +148,19 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setEmail(string $email): static
     {
         $this->email = $email;
+        $this->updatedAt = new \DateTimeImmutable();
+
+        return $this;
+    }
+
+    public function getPseudo(): ?string
+    {
+        return $this->pseudo;
+    }
+
+    public function setPseudo(string $pseudo): static
+    {
+        $this->pseudo = $pseudo;
         $this->updatedAt = new \DateTimeImmutable();
 
         return $this;

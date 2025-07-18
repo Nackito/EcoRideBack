@@ -143,16 +143,11 @@ class UserController extends AbstractController
   #[OA\RequestBody(
     required: true,
     content: new OA\JsonContent(
-      required: ['email', 'password', 'firstName', 'lastName'],
+      required: ['pseudo', 'email', 'password'],
       properties: [
+        new OA\Property(property: 'pseudo', type: 'string', description: 'Pseudo de l\'utilisateur', example: 'john_doe'),
         new OA\Property(property: 'email', type: 'string', format: 'email', description: 'Adresse email', example: 'user@example.com'),
-        new OA\Property(property: 'password', type: 'string', description: 'Mot de passe', example: 'password123'),
-        new OA\Property(property: 'firstName', type: 'string', description: 'Prénom', example: 'John'),
-        new OA\Property(property: 'lastName', type: 'string', description: 'Nom de famille', example: 'Doe'),
-        new OA\Property(property: 'phone', type: 'string', description: 'Numéro de téléphone', example: '+33123456789'),
-        new OA\Property(property: 'dateOfBirth', type: 'string', format: 'date', description: 'Date de naissance', example: '1990-01-15'),
-        new OA\Property(property: 'bio', type: 'string', description: 'Biographie', example: 'Passionné de covoiturage'),
-        new OA\Property(property: 'roles', type: 'array', items: new OA\Items(type: 'string'), description: 'Rôles de l\'utilisateur', example: ['ROLE_USER'])
+        new OA\Property(property: 'password', type: 'string', description: 'Mot de passe', example: 'password123')
       ]
     )
   )]
@@ -163,11 +158,11 @@ class UserController extends AbstractController
       type: 'object',
       properties: [
         new OA\Property(property: 'id', type: 'integer', example: 1),
+        new OA\Property(property: 'pseudo', type: 'string', example: 'john_doe'),
         new OA\Property(property: 'email', type: 'string', example: 'user@example.com'),
-        new OA\Property(property: 'firstName', type: 'string', example: 'John'),
-        new OA\Property(property: 'lastName', type: 'string', example: 'Doe'),
         new OA\Property(property: 'roles', type: 'array', items: new OA\Items(type: 'string')),
-        new OA\Property(property: 'createdAt', type: 'string', format: 'date-time')
+        new OA\Property(property: 'createdAt', type: 'string', format: 'date-time'),
+        new OA\Property(property: 'message', type: 'string', example: 'Inscription réussie. Vous pouvez maintenant compléter votre profil.')
       ]
     )
   )]
@@ -200,7 +195,7 @@ class UserController extends AbstractController
     }
 
     // Vérifier les champs requis
-    $requiredFields = ['email', 'password', 'firstName', 'lastName'];
+    $requiredFields = ['pseudo', 'email', 'password'];
     foreach ($requiredFields as $field) {
       if (!isset($data[$field]) || (is_string($data[$field]) && trim($data[$field]) === '')) {
         return $this->json(['error' => "Le champ '$field' est requis"], Response::HTTP_BAD_REQUEST);
@@ -213,31 +208,25 @@ class UserController extends AbstractController
       return $this->json(['error' => 'Un utilisateur avec cette adresse email existe déjà'], Response::HTTP_CONFLICT);
     }
 
+    // Vérifier que le pseudo n'existe pas déjà
+    $existingUserByPseudo = $this->userRepository->findOneBy(['pseudo' => $data['pseudo']]);
+    if ($existingUserByPseudo) {
+      return $this->json(['error' => 'Un utilisateur avec ce pseudo existe déjà'], Response::HTTP_CONFLICT);
+    }
+
     try {
       $user = new User();
       $user->setEmail($data['email']);
-      $user->setFirstName($data['firstName']);
-      $user->setLastName($data['lastName']);
+      $user->setPseudo($data['pseudo']);
+      $user->setFirstName($data['pseudo']); // Utiliser le pseudo comme firstName temporairement
+      $user->setLastName('À compléter'); // Valeur temporaire pour respecter les contraintes
 
       // Hasher le mot de passe
       $hashedPassword = $this->passwordHasher->hashPassword($user, $data['password']);
       $user->setPassword($hashedPassword);
 
-      // Champs optionnels
-      if (isset($data['phone'])) {
-        $user->setPhone($data['phone']);
-      }
-      if (isset($data['dateOfBirth'])) {
-        $user->setBirthDate(new \DateTime($data['dateOfBirth']));
-      }
-      if (isset($data['bio'])) {
-        $user->setBio($data['bio']);
-      }
-      if (isset($data['roles']) && is_array($data['roles'])) {
-        $user->setRoles($data['roles']);
-      } else {
-        $user->setRoles(['ROLE_USER']);
-      }
+      // Définir le rôle par défaut
+      $user->setRoles(['ROLE_USER']);
 
       // Valider l'entité
       $errors = $this->validator->validate($user);
@@ -252,10 +241,110 @@ class UserController extends AbstractController
       $this->entityManager->persist($user);
       $this->entityManager->flush();
 
-      return $this->json($this->formatUserData($user), Response::HTTP_CREATED);
+      $response = $this->formatUserData($user);
+      $response['pseudo'] = $data['pseudo'];
+      $response['message'] = 'Inscription réussie. Vous pouvez maintenant compléter votre profil.';
+
+      return $this->json($response, Response::HTTP_CREATED);
     } catch (\Exception $e) {
       return $this->json([
         'error' => 'Erreur lors de la création de l\'utilisateur',
+        'details' => $e->getMessage()
+      ], Response::HTTP_INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  #[Route('/{id}/complete-profile', name: 'complete_profile', methods: ['PATCH'])]
+  #[OA\Patch(
+    path: '/api/users/{id}/complete-profile',
+    summary: 'Compléter le profil utilisateur',
+    description: 'Permet à l\'utilisateur de compléter son profil après l\'inscription'
+  )]
+  #[OA\Parameter(
+    name: 'id',
+    in: 'path',
+    description: 'ID de l\'utilisateur',
+    required: true,
+    schema: new OA\Schema(type: 'integer')
+  )]
+  #[OA\RequestBody(
+    required: true,
+    content: new OA\JsonContent(
+      properties: [
+        new OA\Property(property: 'firstName', type: 'string', description: 'Prénom', example: 'John'),
+        new OA\Property(property: 'lastName', type: 'string', description: 'Nom de famille', example: 'Doe'),
+        new OA\Property(property: 'phone', type: 'string', description: 'Numéro de téléphone', example: '+33123456789'),
+        new OA\Property(property: 'dateOfBirth', type: 'string', format: 'date', description: 'Date de naissance', example: '1990-01-15'),
+        new OA\Property(property: 'bio', type: 'string', description: 'Biographie', example: 'Passionné de covoiturage')
+      ]
+    )
+  )]
+  #[OA\Response(
+    response: 200,
+    description: 'Profil complété avec succès',
+    content: new OA\JsonContent(
+      type: 'object',
+      properties: [
+        new OA\Property(property: 'message', type: 'string', example: 'Profil complété avec succès'),
+        new OA\Property(property: 'user', type: 'object')
+      ]
+    )
+  )]
+  #[OA\Response(
+    response: 404,
+    description: 'Utilisateur non trouvé'
+  )]
+  public function completeProfile(int $id, Request $request): JsonResponse
+  {
+    $user = $this->userRepository->find($id);
+
+    if (!$user) {
+      return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_NOT_FOUND);
+    }
+
+    $data = json_decode($request->getContent(), true);
+
+    if (!$data) {
+      return $this->json(['error' => 'Données JSON invalides'], Response::HTTP_BAD_REQUEST);
+    }
+
+    try {
+      // Mise à jour des informations de profil
+      if (isset($data['firstName'])) {
+        $user->setFirstName($data['firstName']);
+      }
+      if (isset($data['lastName'])) {
+        $user->setLastName($data['lastName']);
+      }
+      if (isset($data['phone'])) {
+        $user->setPhone($data['phone']);
+      }
+      if (isset($data['dateOfBirth'])) {
+        $user->setBirthDate(new \DateTime($data['dateOfBirth']));
+      }
+      if (isset($data['bio'])) {
+        $user->setBio($data['bio']);
+      }
+
+      // Valider l'entité
+      $errors = $this->validator->validate($user);
+      if (count($errors) > 0) {
+        $errorMessages = [];
+        foreach ($errors as $error) {
+          $errorMessages[] = $error->getMessage();
+        }
+        return $this->json(['errors' => $errorMessages], Response::HTTP_BAD_REQUEST);
+      }
+
+      $this->entityManager->flush();
+
+      return $this->json([
+        'message' => 'Profil complété avec succès',
+        'user' => $this->formatUserData($user)
+      ]);
+    } catch (\Exception $e) {
+      return $this->json([
+        'error' => 'Erreur lors de la mise à jour du profil',
         'details' => $e->getMessage()
       ], Response::HTTP_INTERNAL_SERVER_ERROR);
     }
@@ -495,6 +584,7 @@ class UserController extends AbstractController
     $data = [
       'id' => $user->getId(),
       'email' => $user->getEmail(),
+      'pseudo' => $user->getPseudo(),
       'firstName' => $user->getFirstName(),
       'lastName' => $user->getLastName(),
       'phone' => $user->getPhone(),
