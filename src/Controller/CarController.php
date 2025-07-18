@@ -98,7 +98,7 @@ class CarController extends AbstractController
     }
 
     #[Route('', name: 'create', methods: ['POST'])]
-    /*#[OA\Post(
+    #[OA\Post(
         path: '/api/cars',
         summary: 'Créer un nouveau véhicule',
         description: 'Ajoute un nouveau véhicule à la base de données'
@@ -119,61 +119,105 @@ class CarController extends AbstractController
     #[OA\Response(
         response: 201,
         description: 'Véhicule créé avec succès',
-        content: new OA\JsonContent(ref: '#/components/schemas/Car')
+        content: new OA\JsonContent(
+            type: 'object',
+            properties: [
+                new OA\Property(property: 'id', type: 'integer', example: 1),
+                new OA\Property(property: 'modele', type: 'string', example: 'Peugeot 308'),
+                new OA\Property(property: 'immatriculation', type: 'string', example: 'AB-123-CD'),
+                new OA\Property(property: 'energie', type: 'string', example: 'Essence'),
+                new OA\Property(property: 'color', type: 'string', example: 'Bleu'),
+                new OA\Property(property: 'dateFirstImmatriculation', type: 'string', format: 'date', example: '2020-01-15'),
+                new OA\Property(property: 'createdAt', type: 'string', format: 'date-time', example: '2023-01-01T10:00:00')
+            ]
+        )
     )]
     #[OA\Response(
         response: 400,
         description: 'Données invalides'
     )]
-    #[OA\Response(
-        response: 409,
-        description: 'Immatriculation déjà utilisée'
-    )]*/
     public function create(Request $request): JsonResponse
     {
-        $data = json_decode($request->getContent(), true);
-
-        if (!$data) {
-            return $this->json(['error' => 'Données JSON invalides'], Response::HTTP_BAD_REQUEST);
+        // Vérifier le Content-Type
+        if (!$request->headers->contains('Content-Type', 'application/json')) {
+            return $this->json([
+                'error' => 'Content-Type doit être application/json',
+                'received' => $request->headers->get('Content-Type')
+            ], Response::HTTP_BAD_REQUEST);
         }
 
-        // Vérifier si l'immatriculation existe déjà
-        $existingCar = $this->carRepository->findOneBy(['immatriculation' => $data['immatriculation'] ?? '']);
+        $content = $request->getContent();
+        if (empty($content)) {
+            return $this->json(['error' => 'Corps de la requête vide'], Response::HTTP_BAD_REQUEST);
+        }
+
+        $data = json_decode($content, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return $this->json([
+                'error' => 'Données JSON invalides',
+                'details' => json_last_error_msg(),
+                'received_content' => $content
+            ], Response::HTTP_BAD_REQUEST);
+        }
+
+        // Vérifier les champs requis
+        $requiredFields = ['modele', 'immatriculation', 'energie', 'color'];
+        foreach ($requiredFields as $field) {
+            if (empty($data[$field])) {
+                return $this->json(['error' => "Le champ '$field' est requis"], Response::HTTP_BAD_REQUEST);
+            }
+        }
+
+        // Vérifier l'unicité de l'immatriculation
+        $existingCar = $this->carRepository->findOneBy(['immatriculation' => $data['immatriculation']]);
         if ($existingCar) {
             return $this->json(['error' => 'Un véhicule avec cette immatriculation existe déjà'], Response::HTTP_CONFLICT);
         }
 
-        $car = new Car();
-        $car->setModele($data['modele'] ?? '');
-        $car->setImmatriculation($data['immatriculation'] ?? '');
-        $car->setEnergie($data['energie'] ?? '');
-        $car->setColor($data['color'] ?? '');
+        try {
+            $car = new Car();
+            $car->setModele($data['modele']);
+            $car->setImmatriculation($data['immatriculation']);
+            $car->setEnergie($data['energie']);
+            $car->setColor($data['color']);
 
-        if (isset($data['dateFirstImmatriculation'])) {
-            $car->setDateFirstImmatriculation(new \DateTime($data['dateFirstImmatriculation']));
-        }
-
-        $errors = $this->validator->validate($car);
-        if (count($errors) > 0) {
-            $errorMessages = [];
-            foreach ($errors as $error) {
-                $errorMessages[] = $error->getMessage();
+            if (isset($data['dateFirstImmatriculation']) && !empty($data['dateFirstImmatriculation'])) {
+                try {
+                    $car->setDateFirstImmatriculation(new \DateTime($data['dateFirstImmatriculation']));
+                } catch (\Exception $e) {
+                    return $this->json(['error' => 'Format de date invalide pour dateFirstImmatriculation'], Response::HTTP_BAD_REQUEST);
+                }
             }
-            return $this->json(['errors' => $errorMessages], Response::HTTP_BAD_REQUEST);
+
+            // Valider l'entité
+            $errors = $this->validator->validate($car);
+            if (count($errors) > 0) {
+                $errorMessages = [];
+                foreach ($errors as $error) {
+                    $errorMessages[] = $error->getMessage();
+                }
+                return $this->json(['errors' => $errorMessages], Response::HTTP_BAD_REQUEST);
+            }
+
+            $this->entityManager->persist($car);
+            $this->entityManager->flush();
+
+            return $this->json([
+                'id' => $car->getId(),
+                'modele' => $car->getModele(),
+                'immatriculation' => $car->getImmatriculation(),
+                'energie' => $car->getEnergie(),
+                'color' => $car->getColor(),
+                'dateFirstImmatriculation' => $car->getDateFirstImmatriculation()?->format('Y-m-d'),
+                'createdAt' => $car->getCreatedAt()?->format('Y-m-d H:i:s'),
+            ], Response::HTTP_CREATED);
+        } catch (\Exception $e) {
+            return $this->json([
+                'error' => 'Erreur lors de la création du véhicule',
+                'details' => $e->getMessage()
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
-
-        $this->entityManager->persist($car);
-        $this->entityManager->flush();
-
-        return $this->json([
-            'id' => $car->getId(),
-            'modele' => $car->getModele(),
-            'immatriculation' => $car->getImmatriculation(),
-            'energie' => $car->getEnergie(),
-            'color' => $car->getColor(),
-            'dateFirstImmatriculation' => $car->getDateFirstImmatriculation()?->format('Y-m-d'),
-            'createdAt' => $car->getCreatedAt()?->format('Y-m-d H:i:s'),
-        ], Response::HTTP_CREATED);
     }
 
     #[Route('/{id}', name: 'update', methods: ['PUT'])]
@@ -272,115 +316,5 @@ class CarController extends AbstractController
             'dateFirstImmatriculation' => $car->getDateFirstImmatriculation()?->format('Y-m-d'),
             'createdAt' => $car->getCreatedAt()?->format('Y-m-d H:i:s'),
         ]);
-    }
-
-    #[Route('/{id}', name: 'delete', methods: ['DELETE'])]
-    /*#[OA\Delete(
-        path: '/api/cars/{id}',
-        summary: 'Supprimer un véhicule',
-        description: 'Supprime un véhicule existant'
-    )]
-    #[OA\Parameter(
-        name: 'id',
-        in: 'path',
-        description: 'ID du véhicule',
-        required: true,
-        schema: new OA\Schema(type: 'integer')
-    )]
-    #[OA\Response(
-        response: 204,
-        description: 'Véhicule supprimé avec succès'
-    )]
-    #[OA\Response(
-        response: 404,
-        description: 'Véhicule non trouvé'
-    )]
-    public function delete(int $id): JsonResponse
-    {
-        $car = $this->carRepository->find($id);
-
-        if (!$car) {
-            return $this->json(['error' => 'Véhicule non trouvé'], Response::HTTP_NOT_FOUND);
-        }
-
-        $this->entityManager->remove($car);
-        $this->entityManager->flush();
-
-        return $this->json(null, Response::HTTP_NO_CONTENT);
-    }
-
-    #[Route('/search', name: 'search', methods: ['GET'])]
-    #[OA\Get(
-        path: '/api/cars/search',
-        summary: 'Rechercher des véhicules',
-        description: 'Recherche des véhicules par modèle, énergie ou couleur'
-    )]
-    #[OA\Parameter(
-        name: 'modele',
-        in: 'query',
-        description: 'Modèle du véhicule à rechercher',
-        required: false,
-        schema: new OA\Schema(type: 'string')
-    )]
-    #[OA\Parameter(
-        name: 'energie',
-        in: 'query',
-        description: 'Type d\'énergie du véhicule',
-        required: false,
-        schema: new OA\Schema(type: 'string')
-    )]
-    #[OA\Parameter(
-        name: 'color',
-        in: 'query',
-        description: 'Couleur du véhicule',
-        required: false,
-        schema: new OA\Schema(type: 'string')
-    )]
-    #[OA\Response(
-        response: 200,
-        description: 'Résultats de recherche',
-        content: new OA\JsonContent(
-            type: 'array',
-            items: new OA\Items(ref: '#/components/schemas/Car')
-        )
-    )]*/
-    public function search(Request $request): JsonResponse
-    {
-        $modele = $request->query->get('modele');
-        $energie = $request->query->get('energie');
-        $color = $request->query->get('color');
-
-        $qb = $this->carRepository->createQueryBuilder('c');
-
-        if ($modele) {
-            $qb->andWhere('c.modele LIKE :modele')
-                ->setParameter('modele', '%' . $modele . '%');
-        }
-
-        if ($energie) {
-            $qb->andWhere('c.energie = :energie')
-                ->setParameter('energie', $energie);
-        }
-
-        if ($color) {
-            $qb->andWhere('c.color = :color')
-                ->setParameter('color', $color);
-        }
-
-        $cars = $qb->getQuery()->getResult();
-
-        $data = array_map(function (Car $car) {
-            return [
-                'id' => $car->getId(),
-                'modele' => $car->getModele(),
-                'immatriculation' => $car->getImmatriculation(),
-                'energie' => $car->getEnergie(),
-                'color' => $car->getColor(),
-                'dateFirstImmatriculation' => $car->getDateFirstImmatriculation()?->format('Y-m-d'),
-                'createdAt' => $car->getCreatedAt()?->format('Y-m-d H:i:s'),
-            ];
-        }, $cars);
-
-        return $this->json($data);
     }
 }
