@@ -134,6 +134,126 @@ class UserController extends AbstractController
     return $this->json($this->formatUserData($user, true));
   }
 
+  #[Route('/login', name: 'login', methods: ['POST'])]
+  #[OA\Post(
+    path: '/api/login',
+    summary: 'Connexion utilisateur',
+    description: 'Authentifie un utilisateur avec son email/pseudo et mot de passe'
+  )]
+  #[OA\RequestBody(
+    required: true,
+    content: new OA\JsonContent(
+      required: ['Email', 'Password'],
+      properties: [
+        new OA\Property(property: 'Email', type: 'string', description: 'Email de l\'utilisateur', example: 'user@example.com'),
+        new OA\Property(property: 'Password', type: 'string', description: 'Mot de passe', example: 'password123')
+      ]
+    )
+  )]
+  #[OA\Response(
+    response: 200,
+    description: 'Connexion réussie',
+    content: new OA\JsonContent(
+      type: 'object',
+      properties: [
+        new OA\Property(
+          property: 'user',
+          type: 'object',
+          properties: [
+            new OA\Property(property: 'id', type: 'integer', example: 1),
+            new OA\Property(property: 'pseudo', type: 'string', example: 'john_doe'),
+            new OA\Property(property: 'email', type: 'string', example: 'user@example.com'),
+            new OA\Property(property: 'firstName', type: 'string', example: 'John'),
+            new OA\Property(property: 'lastName', type: 'string', example: 'Doe'),
+            new OA\Property(property: 'roles', type: 'array', items: new OA\Items(type: 'string'))
+          ]
+        ),
+        new OA\Property(property: 'message', type: 'string', example: 'Connexion réussie'),
+        new OA\Property(property: 'token', type: 'string', example: 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...')
+      ]
+    )
+  )]
+  #[OA\Response(
+    response: 401,
+    description: 'Identifiants invalides'
+  )]
+  #[OA\Response(
+    response: 400,
+    description: 'Données invalides'
+  )]
+  public function login(Request $request): JsonResponse
+  {
+    // Vérifier le Content-Type
+    if (!$request->headers->contains('Content-Type', 'application/json')) {
+      return $this->json([
+        'error' => 'Content-Type doit être application/json',
+        'received' => $request->headers->get('Content-Type')
+      ], Response::HTTP_BAD_REQUEST);
+    }
+
+    $content = $request->getContent();
+    if (empty($content)) {
+      return $this->json(['error' => 'Corps de la requête vide'], Response::HTTP_BAD_REQUEST);
+    }
+
+    $data = json_decode($content, true);
+
+    if (json_last_error() !== JSON_ERROR_NONE) {
+      return $this->json([
+        'error' => 'Données JSON invalides',
+        'details' => json_last_error_msg()
+      ], Response::HTTP_BAD_REQUEST);
+    }
+
+    // Vérifier les champs requis
+    $requiredFields = ['Email', 'Password'];
+    foreach ($requiredFields as $field) {
+      if (!isset($data[$field]) || (is_string($data[$field]) && trim($data[$field]) === '')) {
+        return $this->json(['error' => "Le champ '$field' est requis"], Response::HTTP_BAD_REQUEST);
+      }
+    }
+
+    try {
+      $email = trim($data['Email']);
+      $password = $data['Password'];
+
+      // Rechercher l'utilisateur par email ou pseudo
+      $user = null;
+
+      // Vérifier si c'est un email
+      if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $user = $this->userRepository->findOneBy(['email' => $email]);
+      } else {
+        $user = $this->userRepository->findOneBy(['pseudo' => $email]);
+      }
+
+      if (!$user) {
+        return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_UNAUTHORIZED);
+      }
+
+      // Vérifier le mot de passe
+      if (!$this->passwordHasher->isPasswordValid($user, $password)) {
+        return $this->json(['error' => 'Mot de passe incorrect'], Response::HTTP_UNAUTHORIZED);
+      }
+
+      // Générer un token simple (vous pourrez l'améliorer avec JWT plus tard)
+      $token = base64_encode($user->getId() . ':' . time() . ':' . uniqid());
+
+      $response = [
+        'user' => $this->formatUserData($user),
+        'message' => 'Connexion réussie',
+        'token' => $token
+      ];
+
+      return $this->json($response, Response::HTTP_OK);
+    } catch (\Exception $e) {
+      return $this->json([
+        'error' => 'Erreur lors de la connexion',
+        'details' => $e->getMessage()
+      ], Response::HTTP_INTERNAL_SERVER_ERROR);
+    }
+  }
+
   #[Route('/registration', name: 'registration', methods: ['POST'])]
   #[OA\Post(
     path: '/api/registration',
