@@ -267,7 +267,14 @@ class UserController extends AbstractController
       properties: [
         new OA\Property(property: 'pseudo', type: 'string', description: 'Pseudo de l\'utilisateur', example: 'john_doe'),
         new OA\Property(property: 'email', type: 'string', format: 'email', description: 'Adresse email', example: 'user@example.com'),
-        new OA\Property(property: 'password', type: 'string', description: 'Mot de passe', example: 'password123')
+        new OA\Property(property: 'password', type: 'string', description: 'Mot de passe', example: 'password123'),
+        new OA\Property(
+          property: 'roles',
+          type: 'array',
+          items: new OA\Items(type: 'string', enum: ['ROLE_USER', 'ROLE_DRIVER', 'ROLE_PASSENGER']),
+          description: 'Rôles de l\'utilisateur',
+          example: ['ROLE_USER', 'ROLE_DRIVER']
+        )
       ]
     )
   )]
@@ -345,8 +352,20 @@ class UserController extends AbstractController
       $hashedPassword = $this->passwordHasher->hashPassword($user, $data['password']);
       $user->setPassword($hashedPassword);
 
-      // Définir le rôle par défaut
-      $user->setRoles(['ROLE_USER']);
+      // Définir les rôles
+      $userRoles = ['ROLE_USER']; // Rôle de base obligatoire
+
+      if (isset($data['roles']) && is_array($data['roles'])) {
+        // Valider et ajouter les rôles autorisés
+        $allowedRoles = ['ROLE_DRIVER', 'ROLE_PASSENGER', 'ROLE_ADMIN'];
+        foreach ($data['roles'] as $role) {
+          if (in_array($role, $allowedRoles) && !in_array($role, $userRoles)) {
+            $userRoles[] = $role;
+          }
+        }
+      }
+
+      $user->setRoles($userRoles);
 
       // Valider l'entité
       $errors = $this->validator->validate($user);
