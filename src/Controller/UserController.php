@@ -354,7 +354,7 @@ class UserController extends AbstractController
     path: '/api/users/{id}',
     summary: 'Supprimer un utilisateur',
     description: 'Supprime un utilisateur de la base de données',
-    tags: ['User']
+    tags: ['User'],
   )]
   #[OA\Parameter(
     name: 'id',
