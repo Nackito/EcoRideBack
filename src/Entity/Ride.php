@@ -20,10 +20,12 @@ use OpenApi\Attributes as OA;
     new OA\Property(property: 'id', type: 'integer', description: 'Identifiant unique du trajet', example: 1),
     new OA\Property(property: 'origin', type: 'string', description: 'Lieu de départ', example: 'Paris'),
     new OA\Property(property: 'destination', type: 'string', description: 'Lieu d\'arrivée', example: 'Lyon'),
-    new OA\Property(property: 'departureTime', type: 'string', format: 'date-time', description: 'Heure de départ', example: '2023-12-25T14:30:00'),
+    new OA\Property(property: 'departureDate', type: 'string', format: 'date', description: 'Date de départ', example: '2023-12-25'),
+    new OA\Property(property: 'departureHour', type: 'string', format: 'time', description: 'Heure de départ', example: '14:30:00'),
+    new OA\Property(property: 'arrivalDate', type: 'string', format: 'date', description: 'Date d\'arrivée', example: '2023-12-25'),
+    new OA\Property(property: 'arrivalHour', type: 'string', format: 'time', description: 'Heure d\'arrivée', example: '18:30:00'),
     new OA\Property(property: 'availableSeats', type: 'integer', description: 'Nombre de places disponibles', example: 3),
     new OA\Property(property: 'price', type: 'number', format: 'float', description: 'Prix par personne', example: 25.50),
-    new OA\Property(property: 'description', type: 'string', description: 'Description du trajet', example: 'Trajet direct, non-fumeur'),
     new OA\Property(property: 'status', type: 'string', enum: ['active', 'completed', 'cancelled'], description: 'Statut du trajet', example: 'active'),
     new OA\Property(property: 'createdAt', type: 'string', format: 'date-time', description: 'Date de création'),
     new OA\Property(property: 'updatedAt', type: 'string', format: 'date-time', description: 'Date de modification')
@@ -46,10 +48,21 @@ class Ride
   #[Assert\Length(min: 3, max: 255)]
   private ?string $destination = null;
 
-  #[ORM\Column(type: Types::DATETIME_MUTABLE)]
+  #[ORM\Column(type: Types::DATE_MUTABLE)]
   #[Assert\NotBlank]
-  #[Assert\GreaterThan('now')]
-  private ?\DateTimeInterface $departureTime = null;
+  private ?\DateTimeInterface $departureDate = null;
+
+  #[ORM\Column(type: Types::TIME_MUTABLE)]
+  #[Assert\NotBlank]
+  private ?\DateTimeInterface $departureHour = null;
+
+  #[ORM\Column(type: Types::DATE_MUTABLE)]
+  #[Assert\NotBlank]
+  private ?\DateTimeInterface $arrivalDate = null;
+
+  #[ORM\Column(type: Types::TIME_MUTABLE)]
+  #[Assert\NotBlank]
+  private ?\DateTimeInterface $arrivalHour = null;
 
   #[ORM\Column]
   #[Assert\NotBlank]
@@ -84,26 +97,6 @@ class Ride
   #[ORM\Column(length: 50)]
   #[Assert\Choice(choices: ['active', 'completed', 'cancelled'])]
   private ?string $status = 'active';
-
-  #[ORM\Column(length: 255, nullable: true)]
-  private ?string $originLatLng = null;
-
-  #[ORM\Column(length: 255, nullable: true)]
-  private ?string $destinationLatLng = null;
-
-  #[ORM\Column(nullable: true)]
-  #[Assert\Range(min: 1, max: 2000)]
-  private ?int $estimatedDistance = null; // en km
-
-  #[ORM\Column(nullable: true)]
-  #[Assert\Range(min: 1, max: 24)]
-  private ?int $estimatedDuration = null; // en heures
-
-  #[ORM\Column(type: Types::JSON, nullable: true)]
-  private ?array $waypoints = null; // Points d'arrêt intermédiaires
-
-  #[ORM\Column(type: Types::TEXT, nullable: true)]
-  private ?string $conditions = null; // Conditions spéciales (non-fumeur, animaux, etc.)
 
   public function __construct()
   {
@@ -143,14 +136,53 @@ class Ride
     return $this;
   }
 
-  public function getDepartureTime(): ?\DateTimeInterface
+  public function getDepartureDate(): ?\DateTimeInterface
   {
-    return $this->departureTime;
+    return $this->departureDate;
   }
 
-  public function setDepartureTime(\DateTimeInterface $departureTime): static
+  public function setDepartureDate(\DateTimeInterface $departureDate): static
   {
-    $this->departureTime = $departureTime;
+    $this->departureDate = $departureDate;
+    $this->updatedAt = new \DateTimeImmutable();
+
+    return $this;
+  }
+
+  public function getDepartureHour(): ?\DateTimeInterface
+  {
+    return $this->departureHour;
+  }
+
+  public function setDepartureHour(\DateTimeInterface $departureHour): static
+  {
+    $this->departureHour = $departureHour;
+    $this->updatedAt = new \DateTimeImmutable();
+
+    return $this;
+  }
+
+  public function getArrivalDate(): ?\DateTimeInterface
+  {
+    return $this->arrivalDate;
+  }
+
+  public function setArrivalDate(\DateTimeInterface $arrivalDate): static
+  {
+    $this->arrivalDate = $arrivalDate;
+    $this->updatedAt = new \DateTimeImmutable();
+
+    return $this;
+  }
+
+  public function getArrivalHour(): ?\DateTimeInterface
+  {
+    return $this->arrivalHour;
+  }
+
+  public function setArrivalHour(\DateTimeInterface $arrivalHour): static
+  {
+    $this->arrivalHour = $arrivalHour;
     $this->updatedAt = new \DateTimeImmutable();
 
     return $this;
@@ -275,84 +307,6 @@ class Ride
     return $this;
   }
 
-  public function getOriginLatLng(): ?string
-  {
-    return $this->originLatLng;
-  }
-
-  public function setOriginLatLng(?string $originLatLng): static
-  {
-    $this->originLatLng = $originLatLng;
-    $this->updatedAt = new \DateTimeImmutable();
-
-    return $this;
-  }
-
-  public function getDestinationLatLng(): ?string
-  {
-    return $this->destinationLatLng;
-  }
-
-  public function setDestinationLatLng(?string $destinationLatLng): static
-  {
-    $this->destinationLatLng = $destinationLatLng;
-    $this->updatedAt = new \DateTimeImmutable();
-
-    return $this;
-  }
-
-  public function getEstimatedDistance(): ?int
-  {
-    return $this->estimatedDistance;
-  }
-
-  public function setEstimatedDistance(?int $estimatedDistance): static
-  {
-    $this->estimatedDistance = $estimatedDistance;
-    $this->updatedAt = new \DateTimeImmutable();
-
-    return $this;
-  }
-
-  public function getEstimatedDuration(): ?int
-  {
-    return $this->estimatedDuration;
-  }
-
-  public function setEstimatedDuration(?int $estimatedDuration): static
-  {
-    $this->estimatedDuration = $estimatedDuration;
-    $this->updatedAt = new \DateTimeImmutable();
-
-    return $this;
-  }
-
-  public function getWaypoints(): ?array
-  {
-    return $this->waypoints;
-  }
-
-  public function setWaypoints(?array $waypoints): static
-  {
-    $this->waypoints = $waypoints;
-    $this->updatedAt = new \DateTimeImmutable();
-
-    return $this;
-  }
-
-  public function getConditions(): ?string
-  {
-    return $this->conditions;
-  }
-
-  public function setConditions(?string $conditions): static
-  {
-    $this->conditions = $conditions;
-    $this->updatedAt = new \DateTimeImmutable();
-
-    return $this;
-  }
-
   public function getRemainingSeats(): int
   {
     $bookedSeats = 0;
@@ -379,7 +333,18 @@ class Ride
 
   public function isActive(): bool
   {
-    return $this->status === 'active' && $this->departureTime > new \DateTime();
+    if ($this->status !== 'active') {
+      return false;
+    }
+
+    if (!$this->departureDate || !$this->departureHour) {
+      return false;
+    }
+
+    $now = new \DateTime();
+    $departureDateTime = new \DateTime($this->departureDate->format('Y-m-d') . ' ' . $this->departureHour->format('H:i:s'));
+
+    return $departureDateTime > $now;
   }
 
   public function canBeBooked(): bool

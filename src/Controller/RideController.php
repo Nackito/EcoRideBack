@@ -29,7 +29,8 @@ class RideController extends AbstractController
     /*#[OA\Get(
         path: '/api/rides',
         summary: 'Rechercher des trajets',
-        description: 'Recherche des trajets selon différents critères'
+        description: 'Recherche des trajets selon différents critères',
+        tags: ['Ride']
     )]
     #[OA\Parameter(
         name: 'origin',
@@ -125,7 +126,8 @@ class RideController extends AbstractController
     #[OA\Get(
         path: '/api/rides/{id}',
         summary: 'Récupérer un trajet par ID',
-        description: 'Retourne les détails d\'un trajet spécifique'
+        description: 'Retourne les détails d\'un trajet spécifique',
+        tags: ['Ride']
     )]
     #[OA\Parameter(
         name: 'id',
@@ -171,26 +173,24 @@ class RideController extends AbstractController
     #[OA\Post(
         path: '/api/rides',
         summary: 'Créer un nouveau trajet',
-        description: 'Ajoute un nouveau trajet à la base de données'
+        description: 'Ajoute un nouveau trajet à la base de données',
+        tags: ['Ride']
     )]
     #[OA\RequestBody(
         required: true,
         content: new OA\JsonContent(
-            required: ['origin', 'destination', 'departureTime', 'availableSeats', 'price', 'driverId'],
+            required: ['origin', 'destination', 'departureDate', 'departureHour', 'arrivalDate', 'arrivalHour', 'availableSeats', 'price', 'driverId'],
             properties: [
                 new OA\Property(property: 'origin', type: 'string', description: 'Lieu de départ', example: 'Paris'),
                 new OA\Property(property: 'destination', type: 'string', description: 'Lieu d\'arrivée', example: 'Lyon'),
-                new OA\Property(property: 'departureTime', type: 'string', format: 'date-time', description: 'Heure de départ', example: '2023-12-25T14:30:00'),
+                new OA\Property(property: 'departureDate', type: 'string', format: 'date', description: 'Date de départ', example: '2023-12-25'),
+                new OA\Property(property: 'departureHour', type: 'string', format: 'time', description: 'Heure de départ', example: '14:30:00'),
+                new OA\Property(property: 'arrivalDate', type: 'string', format: 'date', description: 'Date d\'arrivée', example: '2023-12-25'),
+                new OA\Property(property: 'arrivalHour', type: 'string', format: 'time', description: 'Heure d\'arrivée', example: '18:30:00'),
                 new OA\Property(property: 'availableSeats', type: 'integer', description: 'Nombre de places disponibles', example: 3),
                 new OA\Property(property: 'price', type: 'number', format: 'float', description: 'Prix par personne', example: 25.50),
                 new OA\Property(property: 'driverId', type: 'integer', description: 'ID du conducteur', example: 1),
                 new OA\Property(property: 'description', type: 'string', description: 'Description du trajet', example: 'Trajet direct, non-fumeur'),
-                new OA\Property(property: 'originLatLng', type: 'string', description: 'Coordonnées GPS du départ', example: '48.8566,2.3522'),
-                new OA\Property(property: 'destinationLatLng', type: 'string', description: 'Coordonnées GPS de l\'arrivée', example: '45.7640,4.8357'),
-                new OA\Property(property: 'estimatedDistance', type: 'integer', description: 'Distance estimée en km', example: 465),
-                new OA\Property(property: 'estimatedDuration', type: 'integer', description: 'Durée estimée en heures', example: 4),
-                new OA\Property(property: 'waypoints', type: 'array', items: new OA\Items(type: 'string'), description: 'Points d\'arrêt intermédiaires'),
-                new OA\Property(property: 'conditions', type: 'string', description: 'Conditions spéciales', example: 'Non-fumeur, pas d\'animaux'),
             ]
         )
     )]
@@ -243,7 +243,7 @@ class RideController extends AbstractController
         }
 
         // Vérifier les champs requis
-        $requiredFields = ['origin', 'destination', 'departureTime', 'availableSeats', 'price', 'driverId'];
+        $requiredFields = ['origin', 'destination', 'departureDate', 'departureHour', 'arrivalDate', 'arrivalHour', 'availableSeats', 'price', 'driverId'];
         foreach ($requiredFields as $field) {
             if (!isset($data[$field]) || (is_string($data[$field]) && trim($data[$field]) === '')) {
                 return $this->json(['error' => "Le champ '$field' est requis"], Response::HTTP_BAD_REQUEST);
@@ -260,7 +260,10 @@ class RideController extends AbstractController
             $ride = new Ride();
             $ride->setOrigin($data['origin']);
             $ride->setDestination($data['destination']);
-            $ride->setDepartureTime(new \DateTime($data['departureTime']));
+            $ride->setDepartureDate(new \DateTime($data['departureDate']));
+            $ride->setDepartureHour(new \DateTime($data['departureHour']));
+            $ride->setArrivalDate(new \DateTime($data['arrivalDate']));
+            $ride->setArrivalHour(new \DateTime($data['arrivalHour']));
             $ride->setAvailableSeats((int)$data['availableSeats']);
             $ride->setPrice((string)$data['price']);
             $ride->setDriver($driver);
@@ -268,24 +271,6 @@ class RideController extends AbstractController
             // Champs optionnels
             if (isset($data['description'])) {
                 $ride->setDescription($data['description']);
-            }
-            if (isset($data['originLatLng'])) {
-                $ride->setOriginLatLng($data['originLatLng']);
-            }
-            if (isset($data['destinationLatLng'])) {
-                $ride->setDestinationLatLng($data['destinationLatLng']);
-            }
-            if (isset($data['estimatedDistance'])) {
-                $ride->setEstimatedDistance((int)$data['estimatedDistance']);
-            }
-            if (isset($data['estimatedDuration'])) {
-                $ride->setEstimatedDuration((int)$data['estimatedDuration']);
-            }
-            if (isset($data['waypoints'])) {
-                $ride->setWaypoints($data['waypoints']);
-            }
-            if (isset($data['conditions'])) {
-                $ride->setConditions($data['conditions']);
             }
 
             // Valider l'entité
@@ -314,7 +299,8 @@ class RideController extends AbstractController
     #[OA\Put(
         path: '/api/rides/{id}',
         summary: 'Modifier un trajet',
-        description: 'Met à jour les informations d\'un trajet'
+        description: 'Met à jour les informations d\'un trajet',
+        tags: ['Ride']
     )]
     #[OA\Parameter(
         name: 'id',
@@ -426,7 +412,8 @@ class RideController extends AbstractController
     #[OA\Patch(
         path: '/api/rides/{id}/start',
         summary: 'Démarrer un trajet',
-        description: 'Marque un trajet comme démarré et change son statut'
+        description: 'Marque un trajet comme démarré et change son statut',
+        tags: ['Ride']
     )]
     #[OA\Parameter(
         name: 'id',
@@ -510,7 +497,8 @@ class RideController extends AbstractController
     #[OA\Patch(
         path: '/api/rides/{id}/cancel',
         summary: 'Annuler un trajet',
-        description: 'Annule un trajet et change son statut'
+        description: 'Annule un trajet et change son statut',
+        tags: ['Ride']
     )]
     #[OA\Parameter(
         name: 'id',
@@ -558,18 +546,15 @@ class RideController extends AbstractController
             'id' => $ride->getId(),
             'origin' => $ride->getOrigin(),
             'destination' => $ride->getDestination(),
-            'departureTime' => $ride->getDepartureTime()?->format('Y-m-d H:i:s'),
+            'departureDate' => $ride->getDepartureDate()?->format('Y-m-d'),
+            'departureHour' => $ride->getDepartureHour()?->format('H:i:s'),
+            'arrivalDate' => $ride->getArrivalDate()?->format('Y-m-d'),
+            'arrivalHour' => $ride->getArrivalHour()?->format('H:i:s'),
             'availableSeats' => $ride->getAvailableSeats(),
             'remainingSeats' => $ride->getRemainingSeats(),
             'price' => $ride->getPrice(),
             'description' => $ride->getDescription(),
             'status' => $ride->getStatus(),
-            'originLatLng' => $ride->getOriginLatLng(),
-            'destinationLatLng' => $ride->getDestinationLatLng(),
-            'estimatedDistance' => $ride->getEstimatedDistance(),
-            'estimatedDuration' => $ride->getEstimatedDuration(),
-            'waypoints' => $ride->getWaypoints(),
-            'conditions' => $ride->getConditions(),
             'createdAt' => $ride->getCreatedAt()?->format('Y-m-d H:i:s'),
             'updatedAt' => $ride->getUpdatedAt()?->format('Y-m-d H:i:s'),
             'driver' => [

@@ -31,7 +31,8 @@ class UserController extends AbstractController
   #[OA\Post(
     path: '/api/login',
     summary: 'Connexion utilisateur',
-    description: 'Authentifie un utilisateur avec son email/pseudo et mot de passe'
+    description: 'Authentifie un utilisateur avec son email/pseudo et mot de passe',
+    tags: ['User']
   )]
   #[OA\RequestBody(
     required: true,
@@ -141,7 +142,8 @@ class UserController extends AbstractController
   #[OA\Post(
     path: '/api/registration',
     summary: 'Créer un nouvel utilisateur',
-    description: 'Ajoute un nouvel utilisateur à la base de données'
+    description: 'Ajoute un nouvel utilisateur à la base de données',
+    tags: ['User']
   )]
   #[OA\RequestBody(
     required: true,
@@ -280,7 +282,8 @@ class UserController extends AbstractController
   #[OA\Patch(
     path: '/api/users/{id}/change-password',
     summary: 'Changer le mot de passe d\'un utilisateur',
-    description: 'Met à jour le mot de passe d\'un utilisateur'
+    description: 'Met à jour le mot de passe d\'un utilisateur',
+    tags: ['User']
   )]
   #[OA\Parameter(
     name: 'id',
@@ -350,7 +353,8 @@ class UserController extends AbstractController
   #[OA\Delete(
     path: '/api/users/{id}',
     summary: 'Supprimer un utilisateur',
-    description: 'Supprime un utilisateur de la base de données'
+    description: 'Supprime un utilisateur de la base de données',
+    tags: ['User']
   )]
   #[OA\Parameter(
     name: 'id',
@@ -392,7 +396,8 @@ class UserController extends AbstractController
   #[OA\Get(
     path: '/api/account/me',
     summary: 'Récupérer toutes les informations de l\'utilisateur connecté',
-    description: 'Retourne le profil complet de l\'utilisateur actuellement connecté'
+    description: 'Retourne le profil complet de l\'utilisateur actuellement connecté',
+    tags: ['User']
   )]
   #[OA\Response(
     response: 200,
