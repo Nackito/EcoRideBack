@@ -11,6 +11,8 @@ use Doctrine\Persistence\ManagerRegistry;
  */
 class ReviewRepository extends ServiceEntityRepository
 {
+  private const STATUT_CONDITION = 'r.statut = :statut';
+
   public function __construct(ManagerRegistry $registry)
   {
     parent::__construct($registry, Review::class);
@@ -22,7 +24,7 @@ class ReviewRepository extends ServiceEntityRepository
   public function findValidatedReviews(): array
   {
     return $this->createQueryBuilder('r')
-      ->where('r.statut = :statut')
+      ->where(self::STATUT_CONDITION)
       ->setParameter('statut', 'valide')
       ->orderBy('r.id', 'DESC')
       ->getQuery()
@@ -35,7 +37,7 @@ class ReviewRepository extends ServiceEntityRepository
   public function findPendingReviews(): array
   {
     return $this->createQueryBuilder('r')
-      ->where('r.statut = :statut')
+      ->where(self::STATUT_CONDITION)
       ->setParameter('statut', 'en_attente')
       ->orderBy('r.id', 'DESC')
       ->getQuery()
@@ -48,7 +50,7 @@ class ReviewRepository extends ServiceEntityRepository
   public function findRejectedReviews(): array
   {
     return $this->createQueryBuilder('r')
-      ->where('r.statut = :statut')
+      ->where(self::STATUT_CONDITION)
       ->setParameter('statut', 'rejete')
       ->orderBy('r.id', 'DESC')
       ->getQuery()
@@ -61,7 +63,7 @@ class ReviewRepository extends ServiceEntityRepository
   public function findByStatut(string $statut): array
   {
     return $this->createQueryBuilder('r')
-      ->where('r.statut = :statut')
+      ->where(self::STATUT_CONDITION)
       ->setParameter('statut', $statut)
       ->orderBy('r.id', 'DESC')
       ->getQuery()
@@ -88,7 +90,7 @@ class ReviewRepository extends ServiceEntityRepository
   {
     return $this->createQueryBuilder('r')
       ->select('COUNT(r.id)')
-      ->where('r.statut = :statut')
+      ->where(self::STATUT_CONDITION)
       ->setParameter('statut', $statut)
       ->getQuery()
       ->getSingleScalarResult();
@@ -101,7 +103,7 @@ class ReviewRepository extends ServiceEntityRepository
   {
     $result = $this->createQueryBuilder('r')
       ->select('AVG(r.note) as avgNote')
-      ->where('r.statut = :statut')
+      ->where(self::STATUT_CONDITION)
       ->setParameter('statut', 'valide')
       ->getQuery()
       ->getSingleScalarResult();
@@ -115,7 +117,7 @@ class ReviewRepository extends ServiceEntityRepository
   public function findLatestValidatedReviews(int $limit = 10): array
   {
     return $this->createQueryBuilder('r')
-      ->where('r.statut = :statut')
+      ->where(self::STATUT_CONDITION)
       ->setParameter('statut', 'valide')
       ->orderBy('r.id', 'DESC')
       ->setMaxResults($limit)
@@ -130,7 +132,7 @@ class ReviewRepository extends ServiceEntityRepository
   {
     return $this->createQueryBuilder('r')
       ->where('r.note >= :minNote')
-      ->andWhere('r.statut = :statut')
+      ->andWhere(self::STATUT_CONDITION)
       ->setParameter('minNote', $minNote)
       ->setParameter('statut', 'valide')
       ->orderBy('r.note', 'DESC')

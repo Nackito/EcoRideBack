@@ -12,6 +12,8 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use Symfony\Component\Serializer\Normalizer\AbstractNormalizer;
+use Symfony\Component\Serializer\SerializerInterface;
 use OpenApi\Attributes as OA;
 
 #[Route('/api', name: 'api_users_')]
@@ -21,118 +23,9 @@ class UserController extends AbstractController
     private EntityManagerInterface $entityManager,
     private UserRepository $userRepository,
     private ValidatorInterface $validator,
+    private SerializerInterface $serializer,
     private UserPasswordHasherInterface $passwordHasher
   ) {}
-
-  #[Route('', name: 'list', methods: ['GET'])]
-  #[OA\Get(
-    path: '/api/users',
-    summary: 'Récupérer tous les utilisateurs',
-    description: 'Retourne la liste de tous les utilisateurs'
-  )]
-  #[OA\Parameter(
-    name: 'role',
-    in: 'query',
-    description: 'Filtrer par rôle',
-    required: false,
-    schema: new OA\Schema(type: 'string', enum: ['ROLE_USER', 'ROLE_ADMIN'])
-  )]
-  #[OA\Parameter(
-    name: 'search',
-    in: 'query',
-    description: 'Rechercher par nom, prénom ou email',
-    required: false,
-    schema: new OA\Schema(type: 'string')
-  )]
-  #[OA\Response(
-    response: 200,
-    description: 'Liste des utilisateurs récupérée avec succès',
-    content: new OA\JsonContent(
-      type: 'array',
-      items: new OA\Items(
-        type: 'object',
-        properties: [
-          new OA\Property(property: 'id', type: 'integer', example: 1),
-          new OA\Property(property: 'email', type: 'string', example: 'user@example.com'),
-          new OA\Property(property: 'firstName', type: 'string', example: 'John'),
-          new OA\Property(property: 'lastName', type: 'string', example: 'Doe'),
-          new OA\Property(property: 'roles', type: 'array', items: new OA\Items(type: 'string')),
-          new OA\Property(property: 'createdAt', type: 'string', format: 'date-time')
-        ]
-      )
-    )
-  )]
-  public function list(Request $request): JsonResponse
-  {
-    $role = $request->query->get('role');
-    $search = $request->query->get('search');
-
-    $queryBuilder = $this->userRepository->createQueryBuilder('u')
-      ->orderBy('u.createdAt', 'DESC');
-
-    if ($role) {
-      $queryBuilder->andWhere('u.roles LIKE :role')
-        ->setParameter('role', '%"' . $role . '"%');
-    }
-
-    if ($search) {
-      $queryBuilder->andWhere('u.firstName LIKE :search OR u.lastName LIKE :search OR u.email LIKE :search')
-        ->setParameter('search', '%' . $search . '%');
-    }
-
-    $users = $queryBuilder->getQuery()->getResult();
-
-    $data = array_map(function (User $user) {
-      return $this->formatUserData($user);
-    }, $users);
-
-    return $this->json($data);
-  }
-
-  #[Route('/{id}', name: 'show', methods: ['GET'])]
-  #[OA\Get(
-    path: '/api/users/{id}',
-    summary: 'Récupérer un utilisateur par ID',
-    description: 'Retourne les détails d\'un utilisateur spécifique'
-  )]
-  #[OA\Parameter(
-    name: 'id',
-    in: 'path',
-    description: 'ID de l\'utilisateur',
-    required: true,
-    schema: new OA\Schema(type: 'integer')
-  )]
-  #[OA\Response(
-    response: 200,
-    description: 'Utilisateur récupéré avec succès',
-    content: new OA\JsonContent(
-      type: 'object',
-      properties: [
-        new OA\Property(property: 'id', type: 'integer', example: 1),
-        new OA\Property(property: 'email', type: 'string', example: 'user@example.com'),
-        new OA\Property(property: 'firstName', type: 'string', example: 'John'),
-        new OA\Property(property: 'lastName', type: 'string', example: 'Doe'),
-        new OA\Property(property: 'roles', type: 'array', items: new OA\Items(type: 'string')),
-        new OA\Property(property: 'createdAt', type: 'string', format: 'date-time'),
-        new OA\Property(property: 'ridesAsDriver', type: 'array', items: new OA\Items(type: 'object')),
-        new OA\Property(property: 'bookings', type: 'array', items: new OA\Items(type: 'object'))
-      ]
-    )
-  )]
-  #[OA\Response(
-    response: 404,
-    description: 'Utilisateur non trouvé'
-  )]
-  public function show(int $id): JsonResponse
-  {
-    $user = $this->userRepository->find($id);
-
-    if (!$user) {
-      return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_NOT_FOUND);
-    }
-
-    return $this->json($this->formatUserData($user, true));
-  }
 
   #[Route('/login', name: 'login', methods: ['POST'])]
   #[OA\Post(
@@ -183,20 +76,7 @@ class UserController extends AbstractController
   )]
   public function login(Request $request): JsonResponse
   {
-    // Vérifier le Content-Type
-    if (!$request->headers->contains('Content-Type', 'application/json')) {
-      return $this->json([
-        'error' => 'Content-Type doit être application/json',
-        'received' => $request->headers->get('Content-Type')
-      ], Response::HTTP_BAD_REQUEST);
-    }
-
-    $content = $request->getContent();
-    if (empty($content)) {
-      return $this->json(['error' => 'Corps de la requête vide'], Response::HTTP_BAD_REQUEST);
-    }
-
-    $data = json_decode($content, true);
+    $data = json_decode($request->getContent(), true);
 
     if (json_last_error() !== JSON_ERROR_NONE) {
       return $this->json([
@@ -206,11 +86,8 @@ class UserController extends AbstractController
     }
 
     // Vérifier les champs requis
-    $requiredFields = ['Email', 'Password'];
-    foreach ($requiredFields as $field) {
-      if (!isset($data[$field]) || (is_string($data[$field]) && trim($data[$field]) === '')) {
-        return $this->json(['error' => "Le champ '$field' est requis"], Response::HTTP_BAD_REQUEST);
-      }
+    if (!isset($data['Email']) || !isset($data['Password'])) {
+      return $this->json(['error' => 'Email et Password sont requis'], Response::HTTP_BAD_REQUEST);
     }
 
     try {
@@ -236,16 +113,22 @@ class UserController extends AbstractController
         return $this->json(['error' => 'Mot de passe incorrect'], Response::HTTP_UNAUTHORIZED);
       }
 
-      // Générer un token simple (vous pourrez l'améliorer avec JWT plus tard)
+      // Générer un token simple
       $token = base64_encode($user->getId() . ':' . time() . ':' . uniqid());
 
-      $response = [
-        'user' => $this->formatUserData($user),
+      return $this->json([
+        'user' => [
+          'id' => $user->getId(),
+          'pseudo' => $user->getPseudo(),
+          'email' => $user->getEmail(),
+          'firstName' => $user->getFirstName(),
+          'lastName' => $user->getLastName(),
+          'roles' => $user->getRoles(),
+          'createdAt' => $user->getCreatedAt()?->format('Y-m-d H:i:s'),
+        ],
         'message' => 'Connexion réussie',
         'token' => $token
-      ];
-
-      return $this->json($response, Response::HTTP_OK);
+      ], Response::HTTP_OK);
     } catch (\Exception $e) {
       return $this->json([
         'error' => 'Erreur lors de la connexion',
@@ -380,7 +263,7 @@ class UserController extends AbstractController
       $this->entityManager->persist($user);
       $this->entityManager->flush();
 
-      $response = $this->formatUserData($user);
+      $response = $user->toArray();
       $response['pseudo'] = $data['pseudo'];
       $response['message'] = 'Inscription réussie. Vous pouvez maintenant compléter votre profil.';
 
@@ -388,219 +271,6 @@ class UserController extends AbstractController
     } catch (\Exception $e) {
       return $this->json([
         'error' => 'Erreur lors de la création de l\'utilisateur',
-        'details' => $e->getMessage()
-      ], Response::HTTP_INTERNAL_SERVER_ERROR);
-    }
-  }
-
-  #[Route('/{id}/complete-profile', name: 'complete_profile', methods: ['PATCH'])]
-  #[OA\Patch(
-    path: '/api/users/{id}/complete-profile',
-    summary: 'Compléter le profil utilisateur',
-    description: 'Permet à l\'utilisateur de compléter son profil après l\'inscription'
-  )]
-  #[OA\Parameter(
-    name: 'id',
-    in: 'path',
-    description: 'ID de l\'utilisateur',
-    required: true,
-    schema: new OA\Schema(type: 'integer')
-  )]
-  #[OA\RequestBody(
-    required: true,
-    content: new OA\JsonContent(
-      properties: [
-        new OA\Property(property: 'firstName', type: 'string', description: 'Prénom', example: 'John'),
-        new OA\Property(property: 'lastName', type: 'string', description: 'Nom de famille', example: 'Doe'),
-        new OA\Property(property: 'phone', type: 'string', description: 'Numéro de téléphone', example: '+33123456789'),
-        new OA\Property(property: 'dateOfBirth', type: 'string', format: 'date', description: 'Date de naissance', example: '1990-01-15'),
-        new OA\Property(property: 'bio', type: 'string', description: 'Biographie', example: 'Passionné de covoiturage')
-      ]
-    )
-  )]
-  #[OA\Response(
-    response: 200,
-    description: 'Profil complété avec succès',
-    content: new OA\JsonContent(
-      type: 'object',
-      properties: [
-        new OA\Property(property: 'message', type: 'string', example: 'Profil complété avec succès'),
-        new OA\Property(property: 'user', type: 'object')
-      ]
-    )
-  )]
-  #[OA\Response(
-    response: 404,
-    description: 'Utilisateur non trouvé'
-  )]
-  public function completeProfile(int $id, Request $request): JsonResponse
-  {
-    $user = $this->userRepository->find($id);
-
-    if (!$user) {
-      return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_NOT_FOUND);
-    }
-
-    $data = json_decode($request->getContent(), true);
-
-    if (!$data) {
-      return $this->json(['error' => 'Données JSON invalides'], Response::HTTP_BAD_REQUEST);
-    }
-
-    try {
-      // Mise à jour des informations de profil
-      if (isset($data['firstName'])) {
-        $user->setFirstName($data['firstName']);
-      }
-      if (isset($data['lastName'])) {
-        $user->setLastName($data['lastName']);
-      }
-      if (isset($data['phone'])) {
-        $user->setPhone($data['phone']);
-      }
-      if (isset($data['dateOfBirth'])) {
-        $user->setBirthDate(new \DateTime($data['dateOfBirth']));
-      }
-      if (isset($data['bio'])) {
-        $user->setBio($data['bio']);
-      }
-
-      // Valider l'entité
-      $errors = $this->validator->validate($user);
-      if (count($errors) > 0) {
-        $errorMessages = [];
-        foreach ($errors as $error) {
-          $errorMessages[] = $error->getMessage();
-        }
-        return $this->json(['errors' => $errorMessages], Response::HTTP_BAD_REQUEST);
-      }
-
-      $this->entityManager->flush();
-
-      return $this->json([
-        'message' => 'Profil complété avec succès',
-        'user' => $this->formatUserData($user)
-      ]);
-    } catch (\Exception $e) {
-      return $this->json([
-        'error' => 'Erreur lors de la mise à jour du profil',
-        'details' => $e->getMessage()
-      ], Response::HTTP_INTERNAL_SERVER_ERROR);
-    }
-  }
-
-  #[Route('/{id}', name: 'update', methods: ['PUT'])]
-  #[OA\Put(
-    path: '/api/users/{id}',
-    summary: 'Modifier un utilisateur',
-    description: 'Met à jour les informations d\'un utilisateur'
-  )]
-  #[OA\Parameter(
-    name: 'id',
-    in: 'path',
-    description: 'ID de l\'utilisateur',
-    required: true,
-    schema: new OA\Schema(type: 'integer')
-  )]
-  #[OA\RequestBody(
-    required: true,
-    content: new OA\JsonContent(
-      properties: [
-        new OA\Property(property: 'email', type: 'string', format: 'email', description: 'Adresse email'),
-        new OA\Property(property: 'firstName', type: 'string', description: 'Prénom'),
-        new OA\Property(property: 'lastName', type: 'string', description: 'Nom de famille'),
-        new OA\Property(property: 'phone', type: 'string', description: 'Numéro de téléphone'),
-        new OA\Property(property: 'dateOfBirth', type: 'string', format: 'date', description: 'Date de naissance'),
-        new OA\Property(property: 'bio', type: 'string', description: 'Biographie'),
-        new OA\Property(property: 'roles', type: 'array', items: new OA\Items(type: 'string'), description: 'Rôles de l\'utilisateur')
-      ]
-    )
-  )]
-  #[OA\Response(
-    response: 200,
-    description: 'Utilisateur modifié avec succès',
-    content: new OA\JsonContent(
-      type: 'object',
-      properties: [
-        new OA\Property(property: 'id', type: 'integer', example: 1),
-        new OA\Property(property: 'email', type: 'string', example: 'user@example.com'),
-        new OA\Property(property: 'firstName', type: 'string', example: 'John'),
-        new OA\Property(property: 'lastName', type: 'string', example: 'Doe'),
-        new OA\Property(property: 'roles', type: 'array', items: new OA\Items(type: 'string')),
-        new OA\Property(property: 'updatedAt', type: 'string', format: 'date-time')
-      ]
-    )
-  )]
-  #[OA\Response(
-    response: 404,
-    description: 'Utilisateur non trouvé'
-  )]
-  #[OA\Response(
-    response: 409,
-    description: 'Email déjà utilisé'
-  )]
-  public function update(int $id, Request $request): JsonResponse
-  {
-    $user = $this->userRepository->find($id);
-
-    if (!$user) {
-      return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_NOT_FOUND);
-    }
-
-    $data = json_decode($request->getContent(), true);
-
-    if (!$data) {
-      return $this->json(['error' => 'Données JSON invalides'], Response::HTTP_BAD_REQUEST);
-    }
-
-    try {
-      // Vérifier si l'email existe déjà (sauf pour l'utilisateur actuel)
-      if (isset($data['email']) && $data['email'] !== $user->getEmail()) {
-        $existingUser = $this->userRepository->findOneBy(['email' => $data['email']]);
-        if ($existingUser) {
-          return $this->json(['error' => 'Un utilisateur avec cette adresse email existe déjà'], Response::HTTP_CONFLICT);
-        }
-      }
-
-      // Mise à jour des champs modifiables
-      if (isset($data['email'])) {
-        $user->setEmail($data['email']);
-      }
-      if (isset($data['firstName'])) {
-        $user->setFirstName($data['firstName']);
-      }
-      if (isset($data['lastName'])) {
-        $user->setLastName($data['lastName']);
-      }
-      if (isset($data['phone'])) {
-        $user->setPhone($data['phone']);
-      }
-      if (isset($data['dateOfBirth'])) {
-        $user->setBirthDate(new \DateTime($data['dateOfBirth']));
-      }
-      if (isset($data['bio'])) {
-        $user->setBio($data['bio']);
-      }
-      if (isset($data['roles']) && is_array($data['roles'])) {
-        $user->setRoles($data['roles']);
-      }
-
-      // Valider l'entité
-      $errors = $this->validator->validate($user);
-      if (count($errors) > 0) {
-        $errorMessages = [];
-        foreach ($errors as $error) {
-          $errorMessages[] = $error->getMessage();
-        }
-        return $this->json(['errors' => $errorMessages], Response::HTTP_BAD_REQUEST);
-      }
-
-      $this->entityManager->flush();
-
-      return $this->json($this->formatUserData($user));
-    } catch (\Exception $e) {
-      return $this->json([
-        'error' => 'Erreur lors de la modification de l\'utilisateur',
         'details' => $e->getMessage()
       ], Response::HTTP_INTERNAL_SERVER_ERROR);
     }
@@ -718,54 +388,71 @@ class UserController extends AbstractController
     }
   }
 
-  private function formatUserData(User $user, bool $includeRelations = false): array
+  #[Route('/account/me', name: 'me', methods: ['GET'])]
+  #[OA\Get(
+    path: '/api/account/me',
+    summary: 'Récupérer toutes les informations de l\'utilisateur connecté',
+    description: 'Retourne le profil complet de l\'utilisateur actuellement connecté'
+  )]
+  #[OA\Response(
+    response: 200,
+    description: 'Profil utilisateur récupéré avec succès'
+  )]
+  #[OA\Response(
+    response: 401,
+    description: 'Token invalide ou utilisateur non connecté'
+  )]
+  public function me(Request $request): JsonResponse
   {
-    $data = [
-      'id' => $user->getId(),
-      'email' => $user->getEmail(),
-      'pseudo' => $user->getPseudo(),
-      'firstName' => $user->getFirstName(),
-      'lastName' => $user->getLastName(),
-      'phone' => $user->getPhone(),
-      'dateOfBirth' => $user->getBirthDate()?->format('Y-m-d'),
-      'bio' => $user->getBio(),
-      'roles' => $user->getRoles(),
-      'createdAt' => $user->getCreatedAt()?->format('Y-m-d H:i:s'),
-      'updatedAt' => $user->getUpdatedAt()?->format('Y-m-d H:i:s'),
-    ];
+    // Récupérer le token depuis les headers
+    $authHeader = $request->headers->get('Authorization');
 
-    if ($includeRelations) {
-      // Trajets en tant que conducteur
-      $data['ridesAsDriver'] = [];
-      foreach ($user->getRidesAsDriver() as $ride) {
-        $data['ridesAsDriver'][] = [
-          'id' => $ride->getId(),
-          'origin' => $ride->getOrigin(),
-          'destination' => $ride->getDestination(),
-          'departureTime' => $ride->getDepartureTime()?->format('Y-m-d H:i:s'),
-          'status' => $ride->getStatus(),
-          'availableSeats' => $ride->getAvailableSeats(),
-          'price' => $ride->getPrice(),
-        ];
-      }
-
-      // Réservations en tant que passager
-      $data['bookings'] = [];
-      foreach ($user->getBookings() as $booking) {
-        $data['bookings'][] = [
-          'id' => $booking->getId(),
-          'numberOfSeats' => $booking->getNumberOfSeats(),
-          'status' => $booking->getStatus(),
-          'ride' => [
-            'id' => $booking->getRide()?->getId(),
-            'origin' => $booking->getRide()?->getOrigin(),
-            'destination' => $booking->getRide()?->getDestination(),
-            'departureTime' => $booking->getRide()?->getDepartureTime()?->format('Y-m-d H:i:s'),
-          ],
-        ];
-      }
+    if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+      return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
     }
 
-    return $data;
+    $token = substr($authHeader, 7); // Enlever "Bearer "
+
+    try {
+      // Décoder le token personnalisé (base64)
+      $decodedToken = base64_decode($token);
+      $parts = explode(':', $decodedToken);
+
+      if (count($parts) < 3) {
+        return $this->json(['error' => 'Format de token invalide'], Response::HTTP_UNAUTHORIZED);
+      }
+
+      $userId = (int)$parts[0];
+
+      // Récupérer l'utilisateur par ID
+      $user = $this->userRepository->find($userId);
+
+      if (!$user) {
+        return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_NOT_FOUND);
+      }
+
+      // Retourner les informations utilisateur complètes
+      return $this->json([
+        'id' => $user->getId(),
+        'pseudo' => $user->getPseudo(),
+        'email' => $user->getEmail(),
+        'firstName' => $user->getFirstName(),
+        'lastName' => $user->getLastName(),
+        'phone' => $user->getPhone(),
+        'bio' => $user->getBio(),
+        'birthDate' => $user->getBirthDate()?->format('Y-m-d'),
+        'roles' => $user->getRoles(),
+        'isVerified' => $user->isVerified(),
+        'rating' => $user->getRating(),
+        'totalRides' => $user->getTotalRides(),
+        'createdAt' => $user->getCreatedAt()?->format('Y-m-d H:i:s'),
+        'updatedAt' => $user->getUpdatedAt()?->format('Y-m-d H:i:s'),
+      ]);
+    } catch (\Exception $e) {
+      return $this->json([
+        'error' => 'Erreur lors du décodage du token',
+        'details' => $e->getMessage()
+      ], Response::HTTP_UNAUTHORIZED);
+    }
   }
 }

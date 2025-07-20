@@ -43,7 +43,7 @@ class Car
     private ?string $color = null;
 
     #[ORM\Column(type: Types::DATE_MUTABLE)]
-    private ?\DateTime $date_first_immatriculation = null;
+    private ?\DateTime $dateFirstImmatriculation = null;
 
     #[ORM\Column]
     private ?\DateTimeImmutable $createdAt = null;
@@ -108,12 +108,12 @@ class Car
 
     public function getDateFirstImmatriculation(): ?\DateTime
     {
-        return $this->date_first_immatriculation;
+        return $this->dateFirstImmatriculation;
     }
 
-    public function setDateFirstImmatriculation(\DateTime $date_first_immatriculation): static
+    public function setDateFirstImmatriculation(\DateTime $dateFirstImmatriculation): static
     {
-        $this->date_first_immatriculation = $date_first_immatriculation;
+        $this->dateFirstImmatriculation = $dateFirstImmatriculation;
 
         return $this;
     }

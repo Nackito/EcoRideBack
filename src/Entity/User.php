@@ -237,7 +237,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
         return $this->firstName;
     }
 
-    public function setFirstName(string $firstName): static
+    public function setFirstName(?string $firstName): static
     {
         $this->firstName = $firstName;
         $this->updatedAt = new \DateTimeImmutable();
@@ -488,5 +488,17 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
         }
 
         return $this->birthDate->diff(new \DateTime())->y;
+    }
+
+    // ...existing code...
+
+    public function toArray(): array
+    {
+        return [
+            'id' => $this->getId(),
+            'firstName' => $this->getFirstName(),
+            'lastName' => $this->getLastName(),
+            'email' => $this->getEmail(),
+        ];
     }
 }
