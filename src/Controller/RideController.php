@@ -101,11 +101,8 @@ class RideController extends AbstractController
         }
 
         if ($date) {
-            $startDate = new \DateTime($date . ' 00:00:00');
-            $endDate = new \DateTime($date . ' 23:59:59');
-            $queryBuilder->andWhere('r.departureTime BETWEEN :startDate AND :endDate')
-                ->setParameter('startDate', $startDate)
-                ->setParameter('endDate', $endDate);
+            $queryBuilder->andWhere('r.departureDate = :date')
+                ->setParameter('date', new \DateTime($date));
         }
 
         if ($seats) {
@@ -179,18 +176,16 @@ class RideController extends AbstractController
     #[OA\RequestBody(
         required: true,
         content: new OA\JsonContent(
-            required: ['origin', 'destination', 'departureDate', 'departureHour', 'arrivalDate', 'arrivalHour', 'availableSeats', 'price', 'driverId'],
+            required: ['departure', 'destination', 'departureDate', 'departureHour', 'availableSeats', 'price'],
             properties: [
-                new OA\Property(property: 'origin', type: 'string', description: 'Lieu de départ', example: 'Paris'),
+                new OA\Property(property: 'departure', type: 'string', description: 'Lieu de départ', example: 'Paris'),
                 new OA\Property(property: 'destination', type: 'string', description: 'Lieu d\'arrivée', example: 'Lyon'),
                 new OA\Property(property: 'departureDate', type: 'string', format: 'date', description: 'Date de départ', example: '2023-12-25'),
-                new OA\Property(property: 'departureHour', type: 'string', format: 'time', description: 'Heure de départ', example: '14:30:00'),
-                new OA\Property(property: 'arrivalDate', type: 'string', format: 'date', description: 'Date d\'arrivée', example: '2023-12-25'),
-                new OA\Property(property: 'arrivalHour', type: 'string', format: 'time', description: 'Heure d\'arrivée', example: '18:30:00'),
+                new OA\Property(property: 'departureHour', type: 'string', format: 'time', description: 'Heure de départ', example: '14:30'),
                 new OA\Property(property: 'availableSeats', type: 'integer', description: 'Nombre de places disponibles', example: 3),
                 new OA\Property(property: 'price', type: 'number', format: 'float', description: 'Prix par personne', example: 25.50),
-                new OA\Property(property: 'driverId', type: 'integer', description: 'ID du conducteur', example: 1),
                 new OA\Property(property: 'description', type: 'string', description: 'Description du trajet', example: 'Trajet direct, non-fumeur'),
+                new OA\Property(property: 'status', type: 'string', description: 'Statut du trajet', example: 'active'),
             ]
         )
     )]
@@ -243,35 +238,45 @@ class RideController extends AbstractController
         }
 
         // Vérifier les champs requis
-        $requiredFields = ['origin', 'destination', 'departureDate', 'departureHour', 'arrivalDate', 'arrivalHour', 'availableSeats', 'price', 'driverId'];
+        $requiredFields = ['departure', 'destination', 'departureDate', 'departureHour', 'availableSeats', 'price'];
         foreach ($requiredFields as $field) {
             if (!isset($data[$field]) || (is_string($data[$field]) && trim($data[$field]) === '')) {
                 return $this->json(['error' => "Le champ '$field' est requis"], Response::HTTP_BAD_REQUEST);
             }
         }
 
-        // Vérifier que le conducteur existe
-        $driver = $this->userRepository->find($data['driverId']);
+        // TODO: Récupérer le conducteur depuis le token d'authentification
+        // Pour l'instant, utiliser un conducteur par défaut (ID = 1)
+        // Dans une vraie application, il faut décoder le JWT et récupérer l'ID utilisateur
+        $driver = $this->userRepository->find(1);
         if (!$driver) {
             return $this->json(['error' => 'Conducteur non trouvé'], Response::HTTP_NOT_FOUND);
         }
 
         try {
             $ride = new Ride();
-            $ride->setOrigin($data['origin']);
+            $ride->setOrigin($data['departure']);
             $ride->setDestination($data['destination']);
             $ride->setDepartureDate(new \DateTime($data['departureDate']));
             $ride->setDepartureHour(new \DateTime($data['departureHour']));
-            $ride->setArrivalDate(new \DateTime($data['arrivalDate']));
-            $ride->setArrivalHour(new \DateTime($data['arrivalHour']));
             $ride->setAvailableSeats((int)$data['availableSeats']);
             $ride->setPrice((string)$data['price']);
             $ride->setDriver($driver);
 
             // Champs optionnels
+            if (isset($data['arrivalDate']) && !empty($data['arrivalDate'])) {
+                $ride->setArrivalDate(new \DateTime($data['arrivalDate']));
+            }
+            if (isset($data['arrivalHour']) && !empty($data['arrivalHour'])) {
+                $ride->setArrivalHour(new \DateTime($data['arrivalHour']));
+            }
             if (isset($data['description'])) {
                 $ride->setDescription($data['description']);
             }
+
+            // Statut par défaut
+            $status = isset($data['status']) ? $data['status'] : 'active';
+            $ride->setStatus($status);
 
             // Valider l'entité
             $errors = $this->validator->validate($ride);

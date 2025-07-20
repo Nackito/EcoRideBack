@@ -56,12 +56,10 @@ class Ride
   #[Assert\NotBlank]
   private ?\DateTimeInterface $departureHour = null;
 
-  #[ORM\Column(type: Types::DATE_MUTABLE)]
-  #[Assert\NotBlank]
+  #[ORM\Column(type: Types::DATE_MUTABLE, nullable: true)]
   private ?\DateTimeInterface $arrivalDate = null;
 
-  #[ORM\Column(type: Types::TIME_MUTABLE)]
-  #[Assert\NotBlank]
+  #[ORM\Column(type: Types::TIME_MUTABLE, nullable: true)]
   private ?\DateTimeInterface $arrivalHour = null;
 
   #[ORM\Column]
