@@ -25,98 +25,207 @@ class RideController extends AbstractController
         private ValidatorInterface $validator
     ) {}
 
-    #[Route('', name: 'list', methods: ['GET'])]
-    /*#[OA\Get(
-        path: '/api/rides',
+    #[Route('/search', name: 'search', methods: ['GET'])]
+    #[OA\Get(
+        path: '/api/rides/search',
         summary: 'Rechercher des trajets',
-        description: 'Recherche des trajets selon différents critères',
+        description: 'Recherche des trajets selon différents critères : lieu de départ, destination, date de départ et nombre de passagers',
         tags: ['Ride']
     )]
     #[OA\Parameter(
-        name: 'origin',
+        name: 'departure',
         in: 'query',
-        description: 'Lieu de départ',
+        description: 'Lieu de départ (recherche partielle)',
         required: false,
-        schema: new OA\Schema(type: 'string')
+        schema: new OA\Schema(type: 'string', example: 'Paris')
     )]
     #[OA\Parameter(
         name: 'destination',
         in: 'query',
-        description: 'Lieu d\'arrivée',
+        description: 'Lieu d\'arrivée (recherche partielle)',
         required: false,
-        schema: new OA\Schema(type: 'string')
+        schema: new OA\Schema(type: 'string', example: 'Lyon')
     )]
     #[OA\Parameter(
-        name: 'date',
+        name: 'departureDate',
         in: 'query',
-        description: 'Date de départ (YYYY-MM-DD)',
+        description: 'Date de départ (format YYYY-MM-DD)',
         required: false,
-        schema: new OA\Schema(type: 'string', format: 'date')
+        schema: new OA\Schema(type: 'string', format: 'date', example: '2024-12-25')
     )]
     #[OA\Parameter(
-        name: 'seats',
+        name: 'passengers',
         in: 'query',
-        description: 'Nombre de places minimum requises',
+        description: 'Nombre de passagers souhaité (minimum de places disponibles)',
         required: false,
-        schema: new OA\Schema(type: 'integer', minimum: 1)
-    )]
-    #[OA\Parameter(
-        name: 'status',
-        in: 'query',
-        description: 'Statut du trajet',
-        required: false,
-        schema: new OA\Schema(type: 'string', enum: ['active', 'completed', 'cancelled'])
+        schema: new OA\Schema(type: 'integer', minimum: 1, maximum: 8, example: 2)
     )]
     #[OA\Response(
         response: 200,
-        description: 'Liste des trajets trouvés',
+        description: 'Liste des trajets trouvés correspondant aux critères de recherche',
         content: new OA\JsonContent(
-            type: 'array',
-            items: new OA\Items(ref: '#/components/schemas/Ride')
+            properties: [
+                new OA\Property(property: 'success', type: 'boolean', example: true),
+                new OA\Property(property: 'message', type: 'string', example: 'X trajets trouvés'),
+                new OA\Property(
+                    property: 'rides',
+                    type: 'array',
+                    items: new OA\Items(
+                        type: 'object',
+                        properties: [
+                            new OA\Property(property: 'id', type: 'integer', example: 1),
+                            new OA\Property(property: 'origin', type: 'string', example: 'Paris'),
+                            new OA\Property(property: 'destination', type: 'string', example: 'Lyon'),
+                            new OA\Property(property: 'departureDate', type: 'string', format: 'date', example: '2024-12-25'),
+                            new OA\Property(property: 'departureHour', type: 'string', format: 'time', example: '14:30:00'),
+                            new OA\Property(property: 'availableSeats', type: 'integer', example: 3),
+                            new OA\Property(property: 'remainingSeats', type: 'integer', example: 2),
+                            new OA\Property(property: 'price', type: 'string', example: '25.50'),
+                            new OA\Property(property: 'driver', type: 'object'),
+                        ]
+                    )
+                )
+            ]
         )
-    )]*/
+    )]
+    #[OA\Response(
+        response: 400,
+        description: 'Paramètres de recherche invalides'
+    )]
     public function search(Request $request): JsonResponse
     {
-        $origin = $request->query->get('origin');
+        $departure = $request->query->get('departure');
         $destination = $request->query->get('destination');
-        $date = $request->query->get('date');
-        $seats = $request->query->get('seats');
-        $status = $request->query->get('status', 'active');
+        $departureDate = $request->query->get('departureDate');
+        $passengers = $request->query->get('passengers');
 
+        // Validation des paramètres
+        if ($passengers !== null) {
+            $passengers = (int) $passengers;
+            if ($passengers < 1 || $passengers > 8) {
+                return $this->json([
+                    'success' => false,
+                    'error' => 'Le nombre de passagers doit être entre 1 et 8'
+                ], Response::HTTP_BAD_REQUEST);
+            }
+        }
+
+        if ($departureDate !== null) {
+            try {
+                $dateObj = new \DateTime($departureDate);
+                // Vérifier que la date n'est pas dans le passé
+                $today = new \DateTime('today');
+                if ($dateObj < $today) {
+                    return $this->json([
+                        'success' => false,
+                        'error' => 'La date de départ ne peut pas être dans le passé'
+                    ], Response::HTTP_BAD_REQUEST);
+                }
+            } catch (\Exception $e) {
+                return $this->json([
+                    'success' => false,
+                    'error' => 'Format de date invalide. Utilisez le format YYYY-MM-DD'
+                ], Response::HTTP_BAD_REQUEST);
+            }
+        }
+
+        // Construction de la requête
         $queryBuilder = $this->rideRepository->createQueryBuilder('r')
             ->leftJoin('r.driver', 'd')
             ->addSelect('d')
             ->where('r.status = :status')
-            ->setParameter('status', $status)
-            ->orderBy('r.departureTime', 'ASC');
+            ->setParameter('status', 'active')
+            ->orderBy('r.departureDate', 'ASC')
+            ->addOrderBy('r.departureHour', 'ASC');
 
-        if ($origin) {
-            $queryBuilder->andWhere('r.origin LIKE :origin')
-                ->setParameter('origin', '%' . $origin . '%');
+        // Filtres de recherche
+        if (!empty($departure)) {
+            $queryBuilder->andWhere('LOWER(r.origin) LIKE LOWER(:departure)')
+                ->setParameter('departure', '%' . $departure . '%');
         }
 
-        if ($destination) {
-            $queryBuilder->andWhere('r.destination LIKE :destination')
+        if (!empty($destination)) {
+            $queryBuilder->andWhere('LOWER(r.destination) LIKE LOWER(:destination)')
                 ->setParameter('destination', '%' . $destination . '%');
         }
 
-        if ($date) {
-            $queryBuilder->andWhere('r.departureDate = :date')
-                ->setParameter('date', new \DateTime($date));
+        if ($departureDate) {
+            $queryBuilder->andWhere('r.departureDate = :departureDate')
+                ->setParameter('departureDate', new \DateTime($departureDate));
         }
 
-        if ($seats) {
-            $queryBuilder->andWhere('r.availableSeats >= :seats')
-                ->setParameter('seats', $seats);
+        if ($passengers) {
+            $queryBuilder->andWhere('r.availableSeats >= :passengers')
+                ->setParameter('passengers', $passengers);
         }
 
         $rides = $queryBuilder->getQuery()->getResult();
+
+        // Formater les résultats
+        $ridesData = array_map(function (Ride $ride) {
+            return $this->formatRideData($ride);
+        }, $rides);
+
+        return $this->json([
+            'success' => true,
+            'message' => count($rides) . ' trajet' . (count($rides) > 1 ? 's' : '') . ' trouvé' . (count($rides) > 1 ? 's' : ''),
+            'rides' => $ridesData,
+            'total' => count($rides)
+        ]);
+    }
+
+    #[Route('', name: 'list', methods: ['GET'])]
+    #[OA\Get(
+        path: '/api/rides',
+        summary: 'Lister tous les trajets actifs',
+        description: 'Retourne la liste de tous les trajets actifs',
+        tags: ['Ride']
+    )]
+    #[OA\Response(
+        response: 200,
+        description: 'Liste des trajets actifs',
+        content: new OA\JsonContent(
+            properties: [
+                new OA\Property(property: 'success', type: 'boolean', example: true),
+                new OA\Property(
+                    property: 'rides',
+                    type: 'array',
+                    items: new OA\Items(
+                        type: 'object',
+                        properties: [
+                            new OA\Property(property: 'id', type: 'integer', example: 1),
+                            new OA\Property(property: 'origin', type: 'string', example: 'Paris'),
+                            new OA\Property(property: 'destination', type: 'string', example: 'Lyon'),
+                            new OA\Property(property: 'departureDate', type: 'string', format: 'date', example: '2024-12-25'),
+                            new OA\Property(property: 'departureHour', type: 'string', format: 'time', example: '14:30:00'),
+                            new OA\Property(property: 'availableSeats', type: 'integer', example: 3),
+                            new OA\Property(property: 'remainingSeats', type: 'integer', example: 2),
+                            new OA\Property(property: 'price', type: 'string', example: '25.50'),
+                            new OA\Property(property: 'status', type: 'string', example: 'active'),
+                            new OA\Property(property: 'driver', type: 'object'),
+                        ]
+                    )
+                ),
+                new OA\Property(property: 'total', type: 'integer', example: 5)
+            ]
+        )
+    )]
+    public function list(): JsonResponse
+    {
+        $rides = $this->rideRepository->findBy(
+            ['status' => 'active'],
+            ['departureDate' => 'ASC', 'departureHour' => 'ASC']
+        );
 
         $data = array_map(function (Ride $ride) {
             return $this->formatRideData($ride);
         }, $rides);
 
-        return $this->json($data);
+        return $this->json([
+            'success' => true,
+            'rides' => $data,
+            'total' => count($rides)
+        ]);
     }
 
     #[Route('/{id}', name: 'show', methods: ['GET'])]
