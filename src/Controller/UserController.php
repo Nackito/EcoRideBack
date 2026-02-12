@@ -421,29 +421,31 @@ class UserController extends AbstractController
 
       $userId = (int)$parts[0];
 
-      // Récupérer l'utilisateur par ID
-      $user = $this->userRepository->find($userId);
+      // Récupérer l'utilisateur depuis la table `users` (schéma existant)
+      $row = $this->db->fetchAssociative('SELECT * FROM users WHERE id = :id', ['id' => $userId]);
 
-      if (!$user) {
+      if (!$row) {
         return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_NOT_FOUND);
       }
 
-      // Retourner les informations utilisateur complètes
+      // Convertir le rôle SQL en format attendu par le front (Symfony-like)
+      $sqlRole = $row['role'] ?? 'user';
+      $roles = ['ROLE_USER'];
+      if ($sqlRole === 'admin') {
+        $roles[] = 'ROLE_ADMIN';
+      } elseif ($sqlRole === 'employee') {
+        $roles[] = 'ROLE_EMPLOYED';
+      }
+
       return $this->json([
-        'id' => $user->getId(),
-        'pseudo' => $user->getPseudo(),
-        'email' => $user->getEmail(),
-        'firstName' => $user->getFirstName(),
-        'lastName' => $user->getLastName(),
-        'phone' => $user->getPhone(),
-        'bio' => $user->getBio(),
-        'birthDate' => $user->getBirthDate()?->format('Y-m-d'),
-        'roles' => $user->getRoles(),
-        'isVerified' => $user->isVerified(),
-        'rating' => $user->getRating(),
-        'totalRides' => $user->getTotalRides(),
-        'createdAt' => $user->getCreatedAt()?->format('Y-m-d H:i:s'),
-        'updatedAt' => $user->getUpdatedAt()?->format('Y-m-d H:i:s'),
+        'id' => (int) $row['id'],
+        'pseudo' => $row['pseudo'] ?? null,
+        'email' => $row['email'] ?? null,
+        // Champs non présents dans votre schéma sont omis
+        'roles' => $roles,
+        'credits' => isset($row['credits']) ? (int)$row['credits'] : null,
+        'isSuspended' => isset($row['is_suspended']) ? (bool)$row['is_suspended'] : false,
+        'createdAt' => $row['created_at'] ?? null,
       ]);
     } catch (\Exception $e) {
       return $this->json([
