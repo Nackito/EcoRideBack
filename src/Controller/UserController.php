@@ -4,6 +4,7 @@ namespace App\Controller;
 
 use App\Entity\User;
 use App\Repository\UserRepository;
+use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -24,7 +25,8 @@ class UserController extends AbstractController
     private UserRepository $userRepository,
     private ValidatorInterface $validator,
     private SerializerInterface $serializer,
-    private UserPasswordHasherInterface $passwordHasher
+    private UserPasswordHasherInterface $passwordHasher,
+    private Connection $db
   ) {}
 
   #[Route('/login', name: 'login', methods: ['POST'])]
@@ -95,37 +97,30 @@ class UserController extends AbstractController
       $email = trim($data['Email']);
       $password = $data['Password'];
 
-      // Rechercher l'utilisateur par email ou pseudo
-      $user = null;
+      // Recherche dans la table `users` (schéma existant)
+      $sql = 'SELECT * FROM users WHERE email = :identifier OR pseudo = :identifier LIMIT 1';
+      $row = $this->db->fetchAssociative($sql, ['identifier' => $email]);
 
-      // Vérifier si c'est un email
-      if (filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $user = $this->userRepository->findOneBy(['email' => $email]);
-      } else {
-        $user = $this->userRepository->findOneBy(['pseudo' => $email]);
-      }
-
-      if (!$user) {
+      if (!$row) {
         return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_UNAUTHORIZED);
       }
 
-      // Vérifier le mot de passe
-      if (!$this->passwordHasher->isPasswordValid($user, $password)) {
+      // Vérifier le mot de passe haché stocké
+      if (!isset($row['password']) || !\password_verify($password, $row['password'])) {
         return $this->json(['error' => 'Mot de passe incorrect'], Response::HTTP_UNAUTHORIZED);
       }
 
       // Générer un token simple
-      $token = base64_encode($user->getId() . ':' . time() . ':' . uniqid());
+      $token = base64_encode($row['id'] . ':' . time() . ':' . uniqid());
 
       return $this->json([
         'user' => [
-          'id' => $user->getId(),
-          'pseudo' => $user->getPseudo(),
-          'email' => $user->getEmail(),
-          'firstName' => $user->getFirstName(),
-          'lastName' => $user->getLastName(),
-          'roles' => $user->getRoles(),
-          'createdAt' => $user->getCreatedAt()?->format('Y-m-d H:i:s'),
+          'id' => (int) $row['id'],
+          'pseudo' => $row['pseudo'],
+          'email' => $row['email'],
+          // Adapter au schéma existant: pas de firstName/lastName
+          'roles' => [$row['role'] ?? 'user'],
+          'createdAt' => $row['created_at'] ?? null,
         ],
         'message' => 'Connexion réussie',
         'token' => $token
@@ -214,62 +209,59 @@ class UserController extends AbstractController
       }
     }
 
-    // Vérifier que l'email n'existe pas déjà
-    $existingUser = $this->userRepository->findOneBy(['email' => $data['email']]);
-    if ($existingUser) {
+    // Vérifier unicité via DBAL sur la table `users`
+    $existingByEmail = $this->db->fetchOne('SELECT COUNT(1) FROM users WHERE email = :email', ['email' => $data['email']]);
+    if ((int)$existingByEmail > 0) {
       return $this->json(['error' => 'Un utilisateur avec cette adresse email existe déjà'], Response::HTTP_CONFLICT);
     }
 
-    // Vérifier que le pseudo n'existe pas déjà
-    $existingUserByPseudo = $this->userRepository->findOneBy(['pseudo' => $data['pseudo']]);
-    if ($existingUserByPseudo) {
+    $existingByPseudo = $this->db->fetchOne('SELECT COUNT(1) FROM users WHERE pseudo = :pseudo', ['pseudo' => $data['pseudo']]);
+    if ((int)$existingByPseudo > 0) {
       return $this->json(['error' => 'Un utilisateur avec ce pseudo existe déjà'], Response::HTTP_CONFLICT);
     }
 
     try {
-      $user = new User();
-      $user->setEmail($data['email']);
-      $user->setPseudo($data['pseudo']);
-      $user->setFirstName($data['pseudo']); // Utiliser le pseudo comme firstName temporairement
-      $user->setLastName('À compléter'); // Valeur temporaire pour respecter les contraintes
+      // Hachage du mot de passe (compatible password_verify)
+      $hashedPassword = \password_hash($data['password'], PASSWORD_DEFAULT);
 
-      // Hasher le mot de passe
-      $hashedPassword = $this->passwordHasher->hashPassword($user, $data['password']);
-      $user->setPassword($hashedPassword);
-
-      // Définir les rôles
-      $userRoles = ['ROLE_USER']; // Rôle de base obligatoire
-
+      // Adapter les rôles front aux rôles SQL (user/employee/admin). Par défaut: 'user'
+      $roleSql = 'user';
       if (isset($data['roles']) && is_array($data['roles'])) {
-        // Valider et ajouter les rôles autorisés
-        $allowedRoles = ['ROLE_DRIVER', 'ROLE_PASSENGER', 'ROLE_ADMIN'];
-        foreach ($data['roles'] as $role) {
-          if (in_array($role, $allowedRoles) && !in_array($role, $userRoles)) {
-            $userRoles[] = $role;
-          }
+        if (in_array('ROLE_ADMIN', $data['roles'], true)) {
+          $roleSql = 'admin';
+        } elseif (in_array('ROLE_EMPLOYED', $data['roles'], true)) {
+          $roleSql = 'employee';
         }
       }
 
-      $user->setRoles($userRoles);
+      // Insertion dans la table `users`
+      $this->db->insert('users', [
+        'pseudo' => $data['pseudo'],
+        'email' => $data['email'],
+        'password' => $hashedPassword,
+        'role' => $roleSql,
+        'credits' => 20,
+        'is_suspended' => 0,
+        // created_at est par défaut CURRENT_TIMESTAMP
+      ]);
 
-      // Valider l'entité
-      $errors = $this->validator->validate($user);
-      if (count($errors) > 0) {
-        $errorMessages = [];
-        foreach ($errors as $error) {
-          $errorMessages[] = $error->getMessage();
-        }
-        return $this->json(['errors' => $errorMessages], Response::HTTP_BAD_REQUEST);
-      }
+      // Récupérer l'utilisateur créé
+      $userId = (int) $this->db->lastInsertId();
+      $row = $this->db->fetchAssociative('SELECT * FROM users WHERE id = :id', ['id' => $userId]);
 
-      $this->entityManager->persist($user);
-      $this->entityManager->flush();
-
-      $response = $user->toArray();
-      $response['pseudo'] = $data['pseudo'];
-      $response['message'] = 'Inscription réussie. Vous pouvez maintenant compléter votre profil.';
-
-      return $this->json($response, Response::HTTP_CREATED);
+      return $this->json([
+        'id' => $userId,
+        'pseudo' => $row['pseudo'] ?? $data['pseudo'],
+        'email' => $row['email'] ?? $data['email'],
+        'roles' => [$row['role'] ?? 'user'],
+        'createdAt' => $row['created_at'] ?? null,
+        'message' => 'Inscription réussie. Vous pouvez maintenant compléter votre profil.'
+      ], Response::HTTP_CREATED);
+    } catch (\Doctrine\DBAL\Exception $e) {
+      return $this->json([
+        'error' => 'Erreur SQL lors de la création de l\'utilisateur',
+        'details' => $e->getMessage()
+      ], Response::HTTP_INTERNAL_SERVER_ERROR);
     } catch (\Exception $e) {
       return $this->json([
         'error' => 'Erreur lors de la création de l\'utilisateur',
