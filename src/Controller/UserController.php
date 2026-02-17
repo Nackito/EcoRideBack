@@ -428,7 +428,7 @@ class UserController extends AbstractController
         return $this->json(['error' => 'Utilisateur non trouvé'], Response::HTTP_NOT_FOUND);
       }
 
-      // Convertir le rôle SQL en format attendu par le front (Symfony-like)
+      // Construire les rôles: base à partir de users.role puis compléter avec la table role/user_role
       $sqlRole = $row['role'] ?? 'user';
       $roles = ['ROLE_USER'];
       if ($sqlRole === 'admin') {
@@ -436,6 +436,18 @@ class UserController extends AbstractController
       } elseif ($sqlRole === 'employee') {
         $roles[] = 'ROLE_EMPLOYED';
       }
+      // Ajouter les rôles de la table role (libelle) via la table de jonction user_role
+      $roleRows = $this->db->fetchAllAssociative(
+        'SELECT r.libelle FROM role r INNER JOIN user_role ur ON ur.role_id = r.id WHERE ur.user_id = :uid',
+        ['uid' => $userId]
+      );
+      foreach ($roleRows as $r) {
+        if (!empty($r['libelle'])) {
+          $roles[] = $r['libelle'];
+        }
+      }
+      // Dédupliquer
+      $roles = array_values(array_unique($roles));
 
       return $this->json([
         'id' => (int) $row['id'],
@@ -452,6 +464,197 @@ class UserController extends AbstractController
         'error' => 'Erreur lors du décodage du token',
         'details' => $e->getMessage()
       ], Response::HTTP_UNAUTHORIZED);
+    }
+  }
+
+  #[Route('/account/role', name: 'account_role_set', methods: ['POST'])]
+  public function setAccountRole(Request $request): JsonResponse
+  {
+    // Auth
+    $authHeader = $request->headers->get('Authorization');
+    if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+      return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+    }
+    $token = substr($authHeader, 7);
+    $decoded = base64_decode($token);
+    $parts = explode(':', $decoded);
+    if (count($parts) < 3) {
+      return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+    }
+    $userId = (int) $parts[0];
+
+    $data = json_decode($request->getContent(), true) ?? [];
+    $driver = (bool) ($data['driver'] ?? false);
+    $passenger = (bool) ($data['passenger'] ?? false);
+    if (!$driver && !$passenger) {
+      return $this->json(['error' => 'Sélection invalide: choisir chauffeur et/ou passager'], Response::HTTP_BAD_REQUEST);
+    }
+
+    try {
+      // Assurer l'existence des rôles dans la table role
+      $needed = [];
+      if ($driver) $needed[] = 'ROLE_DRIVER';
+      if ($passenger) $needed[] = 'ROLE_PASSENGER';
+
+      foreach ($needed as $lib) {
+        $exists = $this->db->fetchAssociative('SELECT id FROM role WHERE libelle = :lib', ['lib' => $lib]);
+        $roleId = $exists['id'] ?? null;
+        if (!$roleId) {
+          $this->db->insert('role', ['libelle' => $lib]);
+          $roleId = (int) $this->db->lastInsertId();
+        }
+        // Lier dans user_role si absent
+        $link = $this->db->fetchAssociative('SELECT 1 FROM user_role WHERE user_id = :uid AND role_id = :rid', ['uid' => $userId, 'rid' => $roleId]);
+        if (!$link) {
+          $this->db->insert('user_role', ['user_id' => $userId, 'role_id' => $roleId]);
+        }
+      }
+
+      // Nettoyer ceux non sélectionnés
+      $toRemove = [];
+      if (!$driver) $toRemove[] = 'ROLE_DRIVER';
+      if (!$passenger) $toRemove[] = 'ROLE_PASSENGER';
+      foreach ($toRemove as $lib) {
+        $ridRow = $this->db->fetchAssociative('SELECT id FROM role WHERE libelle = :lib', ['lib' => $lib]);
+        if ($ridRow && isset($ridRow['id'])) {
+          $this->db->executeStatement('DELETE FROM user_role WHERE user_id = :uid AND role_id = :rid', ['uid' => $userId, 'rid' => (int)$ridRow['id']]);
+        }
+      }
+
+      return $this->json(['status' => 'ok']);
+    } catch (\Exception $e) {
+      return $this->json(['error' => 'Erreur lors de la mise à jour des rôles', 'details' => $e->getMessage()], Response::HTTP_INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  #[Route('/account/vehicles', name: 'account_vehicles_list', methods: ['GET'])]
+  public function listVehicles(Request $request): JsonResponse
+  {
+    $authHeader = $request->headers->get('Authorization');
+    if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+      return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+    }
+    $token = substr($authHeader, 7);
+    $decoded = base64_decode($token);
+    $parts = explode(':', $decoded);
+    if (count($parts) < 3) {
+      return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+    }
+    $userId = (int) $parts[0];
+
+    $rows = $this->db->fetchAllAssociative('SELECT id, user_id, brand, model, color, energy, plate_number, registration_date, seats FROM vehicles WHERE user_id = :uid ORDER BY id DESC', ['uid' => $userId]);
+    return $this->json($rows);
+  }
+
+  #[Route('/account/vehicles', name: 'account_vehicles_add', methods: ['POST'])]
+  public function addVehicle(Request $request): JsonResponse
+  {
+    $authHeader = $request->headers->get('Authorization');
+    if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+      return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+    }
+    $token = substr($authHeader, 7);
+    $decoded = base64_decode($token);
+    $parts = explode(':', $decoded);
+    if (count($parts) < 3) {
+      return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+    }
+    $userId = (int) $parts[0];
+
+    $data = json_decode($request->getContent(), true) ?? [];
+    foreach (['brand','model','color','energy','plateNumber','registrationDate','seats'] as $f) {
+      if (!isset($data[$f]) || $data[$f] === '') {
+        return $this->json(['error' => "Champ '$f' requis"], Response::HTTP_BAD_REQUEST);
+      }
+    }
+    // energy limité à l'énum fourni
+    $allowedEnergy = ['essence','diesel','electrique','hybride'];
+    if (!in_array($data['energy'], $allowedEnergy, true)) {
+      return $this->json(['error' => 'energy invalide'], Response::HTTP_BAD_REQUEST);
+    }
+    // seats
+    $seats = (int) $data['seats'];
+    if ($seats < 1 || $seats > 8) {
+      return $this->json(['error' => 'seats doit être entre 1 et 8'], Response::HTTP_BAD_REQUEST);
+    }
+    // date
+    $date = $data['registrationDate'];
+    if (!\DateTime::createFromFormat('Y-m-d', $date)) {
+      return $this->json(['error' => 'registrationDate format YYYY-MM-DD requis'], Response::HTTP_BAD_REQUEST);
+    }
+
+    try {
+      $this->db->insert('vehicles', [
+        'user_id' => $userId,
+        'brand' => $data['brand'],
+        'model' => $data['model'],
+        'color' => $data['color'],
+        'energy' => $data['energy'],
+        'plate_number' => $data['plateNumber'],
+        'registration_date' => $data['registrationDate'],
+        'seats' => $seats,
+      ]);
+      return $this->json(['status' => 'ok']);
+    } catch (\Exception $e) {
+      return $this->json(['error' => 'Erreur lors de l\'ajout du véhicule', 'details' => $e->getMessage()], Response::HTTP_INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  #[Route('/account/preferences/base', name: 'account_prefs_base_get', methods: ['GET'])]
+  public function getBasePrefs(Request $request): JsonResponse
+  {
+    $authHeader = $request->headers->get('Authorization');
+    if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+      return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+    }
+    $token = substr($authHeader, 7);
+    $decoded = base64_decode($token);
+    $parts = explode(':', $decoded);
+    if (count($parts) < 3) {
+      return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+    }
+    $userId = (int) $parts[0];
+
+    $rows = $this->db->fetchAllAssociative('SELECT preference FROM driver_preferences WHERE driver_id = :uid', ['uid' => $userId]);
+    $prefs = ['smoker_allowed' => false, 'animals_allowed' => false];
+    foreach ($rows as $r) {
+      $pref = $r['preference'] ?? '';
+      if (str_starts_with($pref, 'smoker_allowed:')) {
+        $prefs['smoker_allowed'] = (substr($pref, strlen('smoker_allowed:')) === 'true');
+      } elseif (str_starts_with($pref, 'animals_allowed:')) {
+        $prefs['animals_allowed'] = (substr($pref, strlen('animals_allowed:')) === 'true');
+      }
+    }
+    return $this->json($prefs);
+  }
+
+  #[Route('/account/preferences/base', name: 'account_prefs_base_set', methods: ['POST'])]
+  public function setBasePrefs(Request $request): JsonResponse
+  {
+    $authHeader = $request->headers->get('Authorization');
+    if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+      return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+    }
+    $token = substr($authHeader, 7);
+    $decoded = base64_decode($token);
+    $parts = explode(':', $decoded);
+    if (count($parts) < 3) {
+      return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+    }
+    $userId = (int) $parts[0];
+
+    $data = json_decode($request->getContent(), true) ?? [];
+    $smoker = (bool) ($data['smoker_allowed'] ?? false);
+    $animals = (bool) ($data['animals_allowed'] ?? false);
+
+    try {
+      // Upsert: supprimer existants et réinsérer
+      $this->db->executeStatement('DELETE FROM driver_preferences WHERE driver_id = :uid AND (preference LIKE "smoker_allowed:%" OR preference LIKE "animals_allowed:%")', ['uid' => $userId]);
+      $this->db->insert('driver_preferences', ['driver_id' => $userId, 'preference' => 'smoker_allowed:' . ($smoker ? 'true' : 'false')]);
+      $this->db->insert('driver_preferences', ['driver_id' => $userId, 'preference' => 'animals_allowed:' . ($animals ? 'true' : 'false')]);
+      return $this->json(['status' => 'ok']);
+    } catch (\Exception $e) {
+      return $this->json(['error' => 'Erreur lors de la mise à jour des préférences', 'details' => $e->getMessage()], Response::HTTP_INTERNAL_SERVER_ERROR);
     }
   }
 }
