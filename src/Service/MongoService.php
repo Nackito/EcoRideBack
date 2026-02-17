@@ -16,7 +16,9 @@ class MongoService
         $uri = $mongodbUri ?? ($_ENV['MONGODB_URI'] ?? 'mongodb://127.0.0.1:27017');
         $dbName = $mongodbDb ?? ($_ENV['MONGODB_DB'] ?? 'ecoride');
 
-        $this->client = new Client($uri);
+        // Options TLS pour Atlas (Windows peut nécessiter un CA explicite)
+        $options = [];
+        $this->client = new Client($uri, $options);
         $this->db = $this->client->selectDatabase($dbName);
     }
 
@@ -32,24 +34,36 @@ class MongoService
 
     public function ping(): array
     {
-        return $this->db->command(['ping' => 1])->toArray()[0] ?? [];
+        $cursor = $this->db->command(['ping' => 1]);
+        $doc = $cursor->toArray()[0] ?? null;
+        if ($doc === null) {
+            return [];
+        }
+        return json_decode(json_encode($doc), true) ?? [];
     }
 
     public function ensureIndexes(): void
     {
-        // TTL index pour logs et avis en attente (30 jours)
+        // TTL index pour journaux et avis bruts (30 jours)
         $ttlSeconds = 30 * 24 * 3600;
 
-        $logs = $this->getCollection('logs');
-        $logs->createIndex(['ts' => 1], ['expireAfterSeconds' => $ttlSeconds]);
+        $eventLogs = $this->getCollection('event_logs');
+        $eventLogs->createIndex(['ts' => 1], ['expireAfterSeconds' => $ttlSeconds]);
 
-        $reviewsPending = $this->getCollection('reviews_pending');
-        $reviewsPending->createIndex(['ts' => 1], ['expireAfterSeconds' => $ttlSeconds]);
+        $rawReviews = $this->getCollection('raw_reviews');
+        $rawReviews->createIndex(['ts' => 1], ['expireAfterSeconds' => $ttlSeconds]);
+
+        // Index utiles (non TTL)
+        $prefs = $this->getCollection('custom_driver_prefs');
+        $prefs->createIndex(['userId' => 1]);
+
+        $adminStatsDaily = $this->getCollection('admin_stats_daily');
+        $adminStatsDaily->createIndex(['date' => 1], ['unique' => true]);
     }
 
     public function insertLog(string $level, string $message, array $context = []): void
     {
-        $this->getCollection('logs')->insertOne([
+        $this->getCollection('event_logs')->insertOne([
             'level' => $level,
             'message' => $message,
             'context' => $context,

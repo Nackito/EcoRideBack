@@ -56,7 +56,7 @@ class MongoDataController extends AbstractController
             'comment' => $data['comment'] ?? null,
             'ts' => new UTCDateTime((int)(microtime(true) * 1000)),
         ];
-        $col = $this->mongo->getCollection('reviews_pending');
+        $col = $this->mongo->getCollection('raw_reviews');
         $ins = $col->insertOne($doc);
         return $this->json(['insertedId' => (string) $ins->getInsertedId()]);
     }
@@ -66,7 +66,7 @@ class MongoDataController extends AbstractController
     {
         $tripId = $request->query->getInt('tripId', 0);
         $filter = $tripId ? ['tripId' => $tripId] : [];
-        $docs = $this->mongo->getCollection('reviews_pending')->find($filter)->toArray();
+        $docs = $this->mongo->getCollection('raw_reviews')->find($filter)->toArray();
         // Convert UTCDateTime to ms
         $res = array_map(function ($d) {
             $d['ts'] = isset($d['ts']) && $d['ts'] instanceof UTCDateTime ? $d['ts']->toDateTime()->format('c') : null;
@@ -86,7 +86,7 @@ class MongoDataController extends AbstractController
         }
         $userId = (int) $data['userId'];
         $prefs = $data['prefs'];
-        $col = $this->mongo->getCollection('preferences_adv');
+        $col = $this->mongo->getCollection('custom_driver_prefs');
         $col->updateOne(
             ['userId' => $userId],
             ['$set' => ['prefs' => $prefs, 'updatedAt' => new UTCDateTime((int)(microtime(true) * 1000))]],
@@ -98,7 +98,7 @@ class MongoDataController extends AbstractController
     #[Route('/preferences/advanced/{userId}', name: 'preferences_adv_get', methods: ['GET'])]
     public function getPreferences(int $userId): JsonResponse
     {
-        $doc = $this->mongo->getCollection('preferences_adv')->findOne(['userId' => $userId]);
+        $doc = $this->mongo->getCollection('custom_driver_prefs')->findOne(['userId' => $userId]);
         if (!$doc) {
             return $this->json(['error' => 'not found'], 404);
         }
@@ -116,7 +116,7 @@ class MongoDataController extends AbstractController
         if (!$date || !is_array($metrics)) {
             return $this->json(['error' => 'date et metrics requis'], 400);
         }
-        $col = $this->mongo->getCollection('daily_stats');
+        $col = $this->mongo->getCollection('admin_stats_daily');
         $col->updateOne(
             ['date' => $date],
             ['$set' => ['metrics' => $metrics, 'generatedAt' => new UTCDateTime((int)(microtime(true) * 1000))]],
@@ -128,7 +128,7 @@ class MongoDataController extends AbstractController
     #[Route('/stats/daily/{date}', name: 'stats_daily_get', methods: ['GET'])]
     public function getDailyStats(string $date): JsonResponse
     {
-        $doc = $this->mongo->getCollection('daily_stats')->findOne(['date' => $date]);
+        $doc = $this->mongo->getCollection('admin_stats_daily')->findOne(['date' => $date]);
         if (!$doc) {
             return $this->json(['error' => 'not found'], 404);
         }
