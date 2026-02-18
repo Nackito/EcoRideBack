@@ -59,6 +59,10 @@ class MongoService
 
         $adminStatsDaily = $this->getCollection('admin_stats_daily');
         $adminStatsDaily->createIndex(['date' => 1], ['unique' => true]);
+
+        // Profil utilisateur (infos personnelles)
+        $userProfile = $this->getCollection('user_profile_extra');
+        $userProfile->createIndex(['userId' => 1], ['unique' => true]);
     }
 
     public function insertLog(string $level, string $message, array $context = []): void

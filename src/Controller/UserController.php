@@ -133,6 +133,45 @@ class UserController extends AbstractController
     }
   }
 
+  #[Route('/account/pseudo', name: 'account_pseudo_set', methods: ['POST'])]
+  public function setPseudo(Request $request): JsonResponse
+  {
+    // Auth
+    $authHeader = $request->headers->get('Authorization');
+    if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+      return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+    }
+    $token = substr($authHeader, 7);
+    $decoded = base64_decode($token);
+    $parts = explode(':', $decoded);
+    if (count($parts) < 3) {
+      return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+    }
+    $userId = (int) $parts[0];
+
+    $data = json_decode($request->getContent(), true) ?? [];
+    $pseudo = isset($data['pseudo']) ? trim((string)$data['pseudo']) : '';
+    if ($pseudo === '') {
+      return $this->json(['error' => "Le champ 'pseudo' est requis"], Response::HTTP_BAD_REQUEST);
+    }
+    // Valider format (3-50, lettres/chiffres/._-)
+    if (!preg_match('/^[a-zA-Z0-9_.-]{3,50}$/', $pseudo)) {
+      return $this->json(['error' => 'Format de pseudo invalide'], Response::HTTP_BAD_REQUEST);
+    }
+
+    // Unicité
+    $exists = (int) $this->db->fetchOne('SELECT COUNT(1) FROM users WHERE pseudo = :p AND id <> :id', ['p' => $pseudo, 'id' => $userId]);
+    if ($exists > 0) {
+      return $this->json(['error' => 'Pseudo déjà utilisé'], Response::HTTP_CONFLICT);
+    }
+
+    try {
+      $this->db->update('users', ['pseudo' => $pseudo], ['id' => $userId]);
+      return $this->json(['status' => 'ok', 'pseudo' => $pseudo]);
+    } catch (\Exception $e) {
+      return $this->json(['error' => 'Erreur lors de la mise à jour du pseudo', 'details' => $e->getMessage()], Response::HTTP_INTERNAL_SERVER_ERROR);
+    }
+  }
   #[Route('/registration', name: 'registration', methods: ['POST'])]
   #[OA\Post(
     path: '/api/registration',
@@ -562,13 +601,13 @@ class UserController extends AbstractController
     $userId = (int) $parts[0];
 
     $data = json_decode($request->getContent(), true) ?? [];
-    foreach (['brand','model','color','energy','plateNumber','registrationDate','seats'] as $f) {
+    foreach (['brand', 'model', 'color', 'energy', 'plateNumber', 'registrationDate', 'seats'] as $f) {
       if (!isset($data[$f]) || $data[$f] === '') {
         return $this->json(['error' => "Champ '$f' requis"], Response::HTTP_BAD_REQUEST);
       }
     }
     // energy limité à l'énum fourni
-    $allowedEnergy = ['essence','diesel','electrique','hybride'];
+    $allowedEnergy = ['essence', 'diesel', 'electrique', 'hybride'];
     if (!in_array($data['energy'], $allowedEnergy, true)) {
       return $this->json(['error' => 'energy invalide'], Response::HTTP_BAD_REQUEST);
     }
