@@ -6,6 +6,7 @@ use App\Entity\Ride;
 use App\Entity\Booking;
 use App\Repository\RideRepository;
 use App\Repository\UserRepository;
+use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -22,7 +23,8 @@ class RideController extends AbstractController
         private EntityManagerInterface $entityManager,
         private RideRepository $rideRepository,
         private UserRepository $userRepository,
-        private ValidatorInterface $validator
+        private ValidatorInterface $validator,
+        private Connection $db
     ) {}
 
     #[Route('/search', name: 'search', methods: ['GET'])]
@@ -212,19 +214,22 @@ class RideController extends AbstractController
     )]
     public function list(): JsonResponse
     {
-        $rides = $this->rideRepository->findBy(
-            ['status' => 'active'],
-            ['departureDate' => 'ASC', 'departureHour' => 'ASC']
+        // Lire depuis la table SQL personnalisée 'trips'
+        $rows = $this->db->fetchAllAssociative(
+            'SELECT id, driver_id, vehicle_id, departure_city, arrival_city, departure_datetime, arrival_datetime, price, eco, seats_left, status
+             FROM trips
+             WHERE status IN ("active", "planned")
+             ORDER BY departure_datetime ASC'
         );
 
-        $data = array_map(function (Ride $ride) {
-            return $this->formatRideData($ride);
-        }, $rides);
+        $data = array_map(function (array $row) {
+            return $this->formatTripRow($row);
+        }, $rows);
 
         return $this->json([
             'success' => true,
             'rides' => $data,
-            'total' => count($rides)
+            'total' => count($rows)
         ]);
     }
 
@@ -266,13 +271,17 @@ class RideController extends AbstractController
     )]
     public function show(int $id): JsonResponse
     {
-        $ride = $this->rideRepository->find($id);
+        $row = $this->db->fetchAssociative(
+            'SELECT id, driver_id, vehicle_id, departure_city, arrival_city, departure_datetime, arrival_datetime, price, eco, seats_left, status
+             FROM trips WHERE id = :id',
+            ['id' => $id]
+        );
 
-        if (!$ride) {
+        if (!$row) {
             return $this->json(['error' => 'Trajet non trouvé'], Response::HTTP_NOT_FOUND);
         }
 
-        return $this->json($this->formatRideData($ride, true));
+        return $this->json($this->formatTripRow($row));
     }
 
     #[Route('', name: 'create', methods: ['POST'])]
@@ -324,6 +333,19 @@ class RideController extends AbstractController
     )]
     public function create(Request $request): JsonResponse
     {
+        // Auth: exiger un token Bearer et lier le conducteur à l'utilisateur connecté
+        $authHeader = $request->headers->get('Authorization');
+        if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+            return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+        }
+        $token = substr($authHeader, 7);
+        $decoded = base64_decode($token);
+        $parts = explode(':', $decoded);
+        if (count($parts) < 3) {
+            return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+        }
+        $driverId = (int) $parts[0];
+
         // Vérifier le Content-Type
         if (!$request->headers->contains('Content-Type', 'application/json')) {
             return $this->json([
@@ -354,53 +376,70 @@ class RideController extends AbstractController
             }
         }
 
-        // TODO: Récupérer le conducteur depuis le token d'authentification
-        // Pour l'instant, utiliser un conducteur par défaut (ID = 1)
-        // Dans une vraie application, il faut décoder le JWT et récupérer l'ID utilisateur
-        $driver = $this->userRepository->find(1);
-        if (!$driver) {
-            return $this->json(['error' => 'Conducteur non trouvé'], Response::HTTP_NOT_FOUND);
-        }
+        // Récupérer le conducteur depuis le token d'authentification
+        // Obtenir une référence sans requête SQL directe (évite table manquante)
+        $driver = $this->entityManager->getReference(\App\Entity\User::class, $driverId);
 
         try {
-            $ride = new Ride();
-            $ride->setOrigin($data['departure']);
-            $ride->setDestination($data['destination']);
-            $ride->setDepartureDate(new \DateTime($data['departureDate']));
-            $ride->setDepartureHour(new \DateTime($data['departureHour']));
-            $ride->setAvailableSeats((int)$data['availableSeats']);
-            $ride->setPrice((string)$data['price']);
-            $ride->setDriver($driver);
+            // Construire les datetime à partir de date + heure
+            $depDate = (string) $data['departureDate'];
+            $depHour = (string) $data['departureHour'];
+            $departureDT = new \DateTime(trim($depDate . ' ' . $depHour));
 
-            // Champs optionnels
-            if (isset($data['arrivalDate']) && !empty($data['arrivalDate'])) {
-                $ride->setArrivalDate(new \DateTime($data['arrivalDate']));
-            }
-            if (isset($data['arrivalHour']) && !empty($data['arrivalHour'])) {
-                $ride->setArrivalHour(new \DateTime($data['arrivalHour']));
-            }
-            if (isset($data['description'])) {
-                $ride->setDescription($data['description']);
+            $arrivalDT = null;
+            if (!empty($data['arrivalDate']) || !empty($data['arrivalHour'])) {
+                $arrDate = (string) ($data['arrivalDate'] ?? $depDate);
+                $arrHour = (string) ($data['arrivalHour'] ?? '');
+                $arrivalDT = new \DateTime(trim($arrDate . ' ' . $arrHour));
             }
 
-            // Statut par défaut
-            $status = isset($data['status']) ? $data['status'] : 'active';
-            $ride->setStatus($status);
-
-            // Valider l'entité
-            $errors = $this->validator->validate($ride);
-            if (count($errors) > 0) {
-                $errorMessages = [];
-                foreach ($errors as $error) {
-                    $errorMessages[] = $error->getMessage();
-                }
-                return $this->json(['errors' => $errorMessages], Response::HTTP_BAD_REQUEST);
+            // Récupérer un véhicule pour l'utilisateur (requis par la contrainte DB)
+            $vehRow = $this->db->fetchAssociative('SELECT id FROM vehicles WHERE user_id = :uid ORDER BY id DESC LIMIT 1', ['uid' => $driverId]);
+            $vehicleId = $vehRow['id'] ?? null;
+            if ($vehicleId === null) {
+                return $this->json([
+                    'error' => 'Aucun véhicule enregistré',
+                    'details' => 'Vous devez enregistrer un véhicule avant de publier un trajet',
+                    'redirect' => '/vehiclemanagement'
+                ], Response::HTTP_BAD_REQUEST);
             }
 
-            $this->entityManager->persist($ride);
-            $this->entityManager->flush();
+            // Normaliser le prix et le statut
+            $price = number_format((float) $data['price'], 2, '.', '');
+            $status = isset($data['status']) ? (string) $data['status'] : 'planned';
 
-            return $this->json($this->formatRideData($ride), Response::HTTP_CREATED);
+            // Insérer dans la table SQL personnalisée 'trips'
+            $this->db->insert('trips', [
+                'driver_id' => $driverId,
+                'vehicle_id' => $vehicleId,
+                'departure_city' => (string) $data['departure'],
+                'arrival_city' => (string) $data['destination'],
+                'departure_datetime' => $departureDT->format('Y-m-d H:i:s'),
+                'arrival_datetime' => $arrivalDT ? $arrivalDT->format('Y-m-d H:i:s') : null,
+                'price' => $price,
+                'eco' => 0,
+                'seats_left' => (int) $data['availableSeats'],
+                'status' => $status,
+            ]);
+
+            $newId = (int) $this->db->lastInsertId();
+
+            return $this->json([
+                'success' => true,
+                'trip' => [
+                    'id' => $newId,
+                    'driverId' => $driverId,
+                    'vehicleId' => $vehicleId,
+                    'departureCity' => (string) $data['departure'],
+                    'arrivalCity' => (string) $data['destination'],
+                    'departureDatetime' => $departureDT->format('Y-m-d H:i:s'),
+                    'arrivalDatetime' => $arrivalDT ? $arrivalDT->format('Y-m-d H:i:s') : null,
+                    'price' => $price,
+                    'eco' => false,
+                    'seatsLeft' => (int) $data['availableSeats'],
+                    'status' => $status,
+                ],
+            ], Response::HTTP_CREATED);
         } catch (\Exception $e) {
             return $this->json([
                 'error' => 'Erreur lors de la création du trajet',
@@ -671,12 +710,22 @@ class RideController extends AbstractController
             'status' => $ride->getStatus(),
             'createdAt' => $ride->getCreatedAt()?->format('Y-m-d H:i:s'),
             'updatedAt' => $ride->getUpdatedAt()?->format('Y-m-d H:i:s'),
-            'driver' => [
-                'id' => $ride->getDriver()?->getId(),
-                'email' => $ride->getDriver()?->getEmail(),
-                'firstName' => $ride->getDriver()?->getFirstName(),
-                'lastName' => $ride->getDriver()?->getLastName(),
-            ],
+            'driver' => (function () use ($ride) {
+                $driverId = $ride->getDriver()?->getId();
+                $driverData = ['id' => $driverId, 'email' => null, 'firstName' => null, 'lastName' => null];
+                if ($driverId) {
+                    try {
+                        $row = $this->db->fetchAssociative('SELECT email, pseudo FROM users WHERE id = :id', ['id' => $driverId]);
+                        if ($row) {
+                            $driverData['email'] = $row['email'] ?? null;
+                            // Conserver les clés attendues; firstName/lastName non disponibles dans ce schéma
+                        }
+                    } catch (\Throwable $e) {
+                        // En cas d'erreur DBAL, retourner au moins l'id
+                    }
+                }
+                return $driverData;
+            })(),
             'canBeBooked' => $ride->canBeBooked(),
             'isActive' => $ride->isActive(),
         ];
@@ -699,5 +748,64 @@ class RideController extends AbstractController
         }
 
         return $data;
+    }
+
+    private function formatTripRow(array $row): array
+    {
+        // Split datetime into date and hour strings
+        $depDT = $row['departure_datetime'] ?? null;
+        $arrDT = $row['arrival_datetime'] ?? null;
+        $depDate = $depDT ? (new \DateTime($depDT))->format('Y-m-d') : null;
+        $depHour = $depDT ? (new \DateTime($depDT))->format('H:i:s') : null;
+        $arrDate = $arrDT ? (new \DateTime($arrDT))->format('Y-m-d') : null;
+        $arrHour = $arrDT ? (new \DateTime($arrDT))->format('H:i:s') : null;
+
+        // Driver minimal info via SQL users
+        $driverId = isset($row['driver_id']) ? (int)$row['driver_id'] : null;
+        $driver = ['id' => $driverId, 'email' => null, 'name' => null];
+        if ($driverId) {
+            try {
+                $u = $this->db->fetchAssociative('SELECT email, pseudo FROM users WHERE id = :id', ['id' => $driverId]);
+                if ($u) {
+                    $driver['email'] = $u['email'] ?? null;
+                    $driver['name'] = $u['pseudo'] ?? null;
+                }
+            } catch (\Throwable $e) {
+            }
+        }
+
+        // Vehicle type via vehicles.energy
+        $vehicleType = null;
+        if (!empty($row['vehicle_id'])) {
+            try {
+                $v = $this->db->fetchAssociative('SELECT energy FROM vehicles WHERE id = :id', ['id' => (int)$row['vehicle_id']]);
+                $energy = $v['energy'] ?? null;
+                if ($energy === 'electrique') $vehicleType = 'electric';
+                elseif ($energy === 'hybride') $vehicleType = 'hybrid';
+                else $vehicleType = 'thermal';
+            } catch (\Throwable $e) {
+            }
+        }
+
+        return [
+            'id' => (int)$row['id'],
+            'origin' => $row['departure_city'] ?? null,
+            'destination' => $row['arrival_city'] ?? null,
+            'departureDate' => $depDate,
+            'departureHour' => $depHour,
+            'arrivalDate' => $arrDate,
+            'arrivalHour' => $arrHour,
+            'availableSeats' => isset($row['seats_left']) ? (int)$row['seats_left'] : 0,
+            'remainingSeats' => isset($row['seats_left']) ? (int)$row['seats_left'] : 0,
+            'price' => isset($row['price']) ? (string)$row['price'] : '0',
+            'description' => null,
+            'status' => $row['status'] ?? 'planned',
+            'driver' => $driver,
+            'vehicleType' => $vehicleType,
+            'createdAt' => null,
+            'updatedAt' => null,
+            'canBeBooked' => true,
+            'isActive' => ($row['status'] ?? '') === 'active',
+        ];
     }
 }
