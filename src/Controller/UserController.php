@@ -601,7 +601,8 @@ class UserController extends AbstractController
     $userId = (int) $parts[0];
 
     $data = json_decode($request->getContent(), true) ?? [];
-    foreach (['brand', 'model', 'color', 'energy', 'plateNumber', 'registrationDate', 'seats'] as $f) {
+    // Champs requis (couleur et immatriculation deviennent optionnels)
+    foreach (['brand', 'model', 'energy', 'registrationDate', 'seats'] as $f) {
       if (!isset($data[$f]) || $data[$f] === '') {
         return $this->json(['error' => "Champ '$f' requis"], Response::HTTP_BAD_REQUEST);
       }
@@ -621,17 +622,43 @@ class UserController extends AbstractController
     if (!\DateTime::createFromFormat('Y-m-d', $date)) {
       return $this->json(['error' => 'registrationDate format YYYY-MM-DD requis'], Response::HTTP_BAD_REQUEST);
     }
+    // Normaliser les champs optionnels
+    $plate = isset($data['plateNumber']) ? trim((string)$data['plateNumber']) : '';
+    $color = isset($data['color']) ? trim((string)$data['color']) : '';
+    // Utiliser chaîne vide si non fourni pour compatibilité avec colonnes NOT NULL
+    $plate = ($plate !== '') ? $plate : '';
+    $color = ($color !== '') ? $color : '';
 
     try {
+      // 1) Insérer dans la table per-user 'vehicles' (utilisée par l'app)
       $this->db->insert('vehicles', [
         'user_id' => $userId,
         'brand' => $data['brand'],
         'model' => $data['model'],
-        'color' => $data['color'],
+        'color' => $color,
         'energy' => $data['energy'],
-        'plate_number' => $data['plateNumber'],
+        'plate_number' => $plate,
         'registration_date' => $data['registrationDate'],
         'seats' => $seats,
+      ]);
+
+      // 2) Insérer également dans la table métier 'car' demandée
+      // Mapper les champs: model -> modele, plate_number -> immatriculation, energy -> energie,
+      // registration_date -> date_first_immatriculation, created_at -> now
+      $energieLabel = match ($data['energy']) {
+        'electrique' => 'Electrique',
+        'hybride' => 'Hybride',
+        'essence' => 'Essence',
+        'diesel' => 'Diesel',
+        default => $data['energy'],
+      };
+      $this->db->insert('car', [
+        'modele' => $data['model'],
+        'immatriculation' => $plate ?? '',
+        'energie' => $energieLabel,
+        'color' => $color ?? '',
+        'date_first_immatriculation' => $data['registrationDate'],
+        'created_at' => (new \DateTimeImmutable())->format('Y-m-d H:i:s'),
       ]);
       return $this->json(['status' => 'ok']);
     } catch (\Exception $e) {

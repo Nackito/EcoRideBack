@@ -392,6 +392,10 @@ class RideController extends AbstractController
                 $arrHour = (string) ($data['arrivalHour'] ?? '');
                 $arrivalDT = new \DateTime(trim($arrDate . ' ' . $arrHour));
             }
+            // Fallback: si non fourni, définir une heure d'arrivée par défaut ( +2h )
+            if ($arrivalDT === null) {
+                $arrivalDT = (clone $departureDT)->modify('+2 hours');
+            }
 
             // Récupérer un véhicule pour l'utilisateur (requis par la contrainte DB)
             $vehRow = $this->db->fetchAssociative('SELECT id FROM vehicles WHERE user_id = :uid ORDER BY id DESC LIMIT 1', ['uid' => $driverId]);
@@ -404,9 +408,8 @@ class RideController extends AbstractController
                 ], Response::HTTP_BAD_REQUEST);
             }
 
-            // Normaliser le prix et le statut
+            // Normaliser le prix (laisser le statut géré par la BDD)
             $price = number_format((float) $data['price'], 2, '.', '');
-            $status = isset($data['status']) ? (string) $data['status'] : 'planned';
 
             // Insérer dans la table SQL personnalisée 'trips'
             $this->db->insert('trips', [
@@ -415,14 +418,17 @@ class RideController extends AbstractController
                 'departure_city' => (string) $data['departure'],
                 'arrival_city' => (string) $data['destination'],
                 'departure_datetime' => $departureDT->format('Y-m-d H:i:s'),
-                'arrival_datetime' => $arrivalDT ? $arrivalDT->format('Y-m-d H:i:s') : null,
+                'arrival_datetime' => $arrivalDT->format('Y-m-d H:i:s'),
                 'price' => $price,
                 'eco' => 0,
                 'seats_left' => (int) $data['availableSeats'],
-                'status' => $status,
+                // status: laisser la colonne utiliser sa valeur par défaut
             ]);
 
             $newId = (int) $this->db->lastInsertId();
+            // Lire le statut réellement stocké
+            $row = $this->db->fetchAssociative('SELECT status FROM trips WHERE id = :id', ['id' => $newId]);
+            $storedStatus = $row['status'] ?? 'planned';
 
             return $this->json([
                 'success' => true,
@@ -433,11 +439,11 @@ class RideController extends AbstractController
                     'departureCity' => (string) $data['departure'],
                     'arrivalCity' => (string) $data['destination'],
                     'departureDatetime' => $departureDT->format('Y-m-d H:i:s'),
-                    'arrivalDatetime' => $arrivalDT ? $arrivalDT->format('Y-m-d H:i:s') : null,
+                    'arrivalDatetime' => $arrivalDT->format('Y-m-d H:i:s'),
                     'price' => $price,
                     'eco' => false,
                     'seatsLeft' => (int) $data['availableSeats'],
-                    'status' => $status,
+                    'status' => $storedStatus,
                 ],
             ], Response::HTTP_CREATED);
         } catch (\Exception $e) {
