@@ -231,7 +231,7 @@ class RideController extends AbstractController
         ]);
     }
 
-    #[Route('/{id}', name: 'show', methods: ['GET'])]
+    #[Route('/{id}', name: 'show', requirements: ['id' => '\\d+'], methods: ['GET'])]
     #[OA\Get(
         path: '/api/rides/{id}',
         summary: 'Récupérer un trajet par ID',
@@ -282,7 +282,7 @@ class RideController extends AbstractController
         return $this->json($this->formatTripRow($row));
     }
 
-    #[Route('/{id}/book', name: 'book', methods: ['POST'])]
+    #[Route('/{id}/book', name: 'book', requirements: ['id' => '\\d+'], methods: ['POST'])]
     public function book(int $id, Request $request): JsonResponse
     {
         // Auth basique via token Bearer
@@ -297,8 +297,15 @@ class RideController extends AbstractController
             return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
         }
         $passengerId = (int) $parts[0];
+        $payload = json_decode($request->getContent(), true) ?? [];
+        $requestedSeats = isset($payload['seatsRequested']) ? (int)$payload['seatsRequested'] : 1;
+        if ($requestedSeats < 1 || $requestedSeats > 8) {
+            return $this->json(['error' => 'Nombre de places invalide (1 à 8)'], Response::HTTP_BAD_REQUEST);
+        }
 
         try {
+            $this->ensureBookingRequestsTable();
+
             $trip = $this->db->fetchAssociative(
                 'SELECT id, driver_id, departure_datetime, seats_left, status FROM trips WHERE id = :id',
                 ['id' => $id]
@@ -329,28 +336,215 @@ class RideController extends AbstractController
             if ($seatsLeft <= 0) {
                 return $this->json(['error' => 'Plus de places disponibles'], Response::HTTP_CONFLICT);
             }
-
-            // Réserver 1 place: décrément atomique
-            $affected = $this->db->executeStatement(
-                'UPDATE trips SET seats_left = seats_left - 1 WHERE id = :id AND seats_left > 0',
-                ['id' => $id]
-            );
-
-            if ($affected < 1) {
-                return $this->json(['error' => 'Réservation impossible, plus de places'], Response::HTTP_CONFLICT);
+            if ($requestedSeats > $seatsLeft) {
+                return $this->json(['error' => 'Le nombre de places demandé dépasse les places disponibles'], Response::HTTP_BAD_REQUEST);
             }
 
-            $updated = $this->db->fetchAssociative('SELECT seats_left FROM trips WHERE id = :id', ['id' => $id]);
+            // Éviter les doublons de demande en attente
+            $pendingExists = (int)$this->db->fetchOne(
+                'SELECT COUNT(1) FROM booking_requests WHERE trip_id = :tid AND passenger_id = :pid AND status = "pending"',
+                ['tid' => $id, 'pid' => $passengerId]
+            );
+            if ($pendingExists > 0) {
+                return $this->json(['error' => 'Vous avez déjà une demande en attente pour ce trajet'], Response::HTTP_CONFLICT);
+            }
+
+            $now = (new \DateTimeImmutable())->format('Y-m-d H:i:s');
+            $this->db->insert('booking_requests', [
+                'trip_id' => $id,
+                'passenger_id' => $passengerId,
+                'seats_requested' => $requestedSeats,
+                'status' => 'pending',
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+            $requestId = (int)$this->db->lastInsertId();
 
             return $this->json([
                 'success' => true,
                 'message' => 'Demande de réservation envoyée',
                 'rideId' => $id,
-                'seatsLeft' => isset($updated['seats_left']) ? (int)$updated['seats_left'] : null,
+                'requestId' => $requestId,
+                'seatsRequested' => $requestedSeats,
+                'status' => 'pending',
             ], Response::HTTP_OK);
         } catch (\Exception $e) {
             return $this->json([
                 'error' => 'Erreur lors de la réservation',
+                'details' => $e->getMessage(),
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    #[Route('/driver/requests', name: 'driver_requests', methods: ['GET'])]
+    public function driverBookingRequests(Request $request): JsonResponse
+    {
+        $authHeader = $request->headers->get('Authorization');
+        if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+            return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+        }
+        $token = substr($authHeader, 7);
+        $decoded = base64_decode($token);
+        $parts = explode(':', $decoded);
+        if (count($parts) < 3) {
+            return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+        }
+        $driverId = (int) $parts[0];
+
+        try {
+            $this->ensureBookingRequestsTable();
+
+            $rows = $this->db->fetchAllAssociative(
+                'SELECT br.id, br.trip_id, br.passenger_id, br.seats_requested, br.status, br.created_at,
+                        t.departure_city, t.arrival_city, t.departure_datetime,
+                        u.pseudo AS passenger_pseudo, u.email AS passenger_email
+                 FROM booking_requests br
+                 INNER JOIN trips t ON t.id = br.trip_id
+                 INNER JOIN users u ON u.id = br.passenger_id
+                 WHERE t.driver_id = :driverId
+                 ORDER BY br.created_at DESC',
+                ['driverId' => $driverId]
+            );
+
+            return $this->json([
+                'success' => true,
+                'requests' => $rows,
+                'total' => count($rows),
+            ]);
+        } catch (\Exception $e) {
+            return $this->json([
+                'error' => 'Erreur lors de la récupération des demandes',
+                'details' => $e->getMessage(),
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    #[Route('/driver/requests/{requestId}/accept', name: 'driver_request_accept', requirements: ['requestId' => '\\d+'], methods: ['POST'])]
+    public function acceptBookingRequest(int $requestId, Request $request): JsonResponse
+    {
+        $authHeader = $request->headers->get('Authorization');
+        if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+            return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+        }
+        $token = substr($authHeader, 7);
+        $decoded = base64_decode($token);
+        $parts = explode(':', $decoded);
+        if (count($parts) < 3) {
+            return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+        }
+        $driverId = (int) $parts[0];
+
+        try {
+            $this->ensureBookingRequestsTable();
+
+            $row = $this->db->fetchAssociative(
+                'SELECT br.id, br.trip_id, br.seats_requested, br.status, t.driver_id, t.seats_left
+                 FROM booking_requests br
+                 INNER JOIN trips t ON t.id = br.trip_id
+                 WHERE br.id = :id',
+                ['id' => $requestId]
+            );
+
+            if (!$row) {
+                return $this->json(['error' => 'Demande introuvable'], Response::HTTP_NOT_FOUND);
+            }
+            if ((int)$row['driver_id'] !== $driverId) {
+                return $this->json(['error' => 'Accès refusé'], Response::HTTP_FORBIDDEN);
+            }
+            if (($row['status'] ?? '') !== 'pending') {
+                return $this->json(['error' => 'Cette demande a déjà été traitée'], Response::HTTP_BAD_REQUEST);
+            }
+
+            $needed = (int)($row['seats_requested'] ?? 1);
+            $seatsLeft = (int)($row['seats_left'] ?? 0);
+            if ($seatsLeft < $needed) {
+                return $this->json(['error' => 'Pas assez de places disponibles'], Response::HTTP_CONFLICT);
+            }
+
+            $this->db->beginTransaction();
+            try {
+                $affected = $this->db->executeStatement(
+                    'UPDATE trips SET seats_left = seats_left - :n WHERE id = :tripId AND seats_left >= :n',
+                    ['n' => $needed, 'tripId' => (int)$row['trip_id']]
+                );
+                if ($affected < 1) {
+                    $this->db->rollBack();
+                    return $this->json(['error' => 'Places insuffisantes'], Response::HTTP_CONFLICT);
+                }
+
+                $now = (new \DateTimeImmutable())->format('Y-m-d H:i:s');
+                $this->db->update('booking_requests', [
+                    'status' => 'accepted',
+                    'updated_at' => $now,
+                    'responded_at' => $now,
+                ], ['id' => $requestId]);
+
+                $this->db->commit();
+            } catch (\Throwable $e) {
+                $this->db->rollBack();
+                throw $e;
+            }
+
+            return $this->json(['success' => true, 'message' => 'Demande acceptée']);
+        } catch (\Exception $e) {
+            return $this->json([
+                'error' => 'Erreur lors de l\'acceptation',
+                'details' => $e->getMessage(),
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    #[Route('/driver/requests/{requestId}/reject', name: 'driver_request_reject', requirements: ['requestId' => '\\d+'], methods: ['POST'])]
+    public function rejectBookingRequest(int $requestId, Request $request): JsonResponse
+    {
+        $authHeader = $request->headers->get('Authorization');
+        if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+            return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+        }
+        $token = substr($authHeader, 7);
+        $decoded = base64_decode($token);
+        $parts = explode(':', $decoded);
+        if (count($parts) < 3) {
+            return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+        }
+        $driverId = (int) $parts[0];
+
+        try {
+            $this->ensureBookingRequestsTable();
+
+            $row = $this->db->fetchAssociative(
+                'SELECT br.id, br.status, t.driver_id
+                 FROM booking_requests br
+                 INNER JOIN trips t ON t.id = br.trip_id
+                 WHERE br.id = :id',
+                ['id' => $requestId]
+            );
+
+            if (!$row) {
+                return $this->json(['error' => 'Demande introuvable'], Response::HTTP_NOT_FOUND);
+            }
+            if ((int)$row['driver_id'] !== $driverId) {
+                return $this->json(['error' => 'Accès refusé'], Response::HTTP_FORBIDDEN);
+            }
+            if (($row['status'] ?? '') !== 'pending') {
+                return $this->json(['error' => 'Cette demande a déjà été traitée'], Response::HTTP_BAD_REQUEST);
+            }
+
+            $payload = json_decode($request->getContent(), true) ?? [];
+            $reason = isset($payload['reason']) ? trim((string)$payload['reason']) : null;
+            $now = (new \DateTimeImmutable())->format('Y-m-d H:i:s');
+
+            $this->db->update('booking_requests', [
+                'status' => 'rejected',
+                'updated_at' => $now,
+                'responded_at' => $now,
+                'response_message' => $reason ?: null,
+            ], ['id' => $requestId]);
+
+            return $this->json(['success' => true, 'message' => 'Demande refusée']);
+        } catch (\Exception $e) {
+            return $this->json([
+                'error' => 'Erreur lors du refus',
                 'details' => $e->getMessage(),
             ], Response::HTTP_INTERNAL_SERVER_ERROR);
         }
@@ -885,5 +1079,25 @@ class RideController extends AbstractController
             'canBeBooked' => true,
             'isActive' => ($row['status'] ?? '') === 'active',
         ];
+    }
+
+    private function ensureBookingRequestsTable(): void
+    {
+        $this->db->executeStatement(
+            'CREATE TABLE IF NOT EXISTS booking_requests (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                trip_id INT NOT NULL,
+                passenger_id INT NOT NULL,
+                seats_requested INT NOT NULL DEFAULT 1,
+                status VARCHAR(20) NOT NULL DEFAULT "pending",
+                response_message VARCHAR(255) NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                responded_at DATETIME NULL,
+                INDEX idx_booking_trip (trip_id),
+                INDEX idx_booking_driver_status (status),
+                INDEX idx_booking_passenger (passenger_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+        );
     }
 }
