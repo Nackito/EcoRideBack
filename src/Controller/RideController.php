@@ -131,48 +131,46 @@ class RideController extends AbstractController
             }
         }
 
-        // Construction de la requête
-        $queryBuilder = $this->rideRepository->createQueryBuilder('r')
-            ->leftJoin('r.driver', 'd')
-            ->addSelect('d')
-            ->where('r.status = :status')
-            ->setParameter('status', 'active')
-            ->orderBy('r.departureDate', 'ASC')
-            ->addOrderBy('r.departureHour', 'ASC');
+        // Construction de la requête sur la table SQL réelle `trips`
+        $sql = 'SELECT id, driver_id, vehicle_id, departure_city, arrival_city, departure_datetime, arrival_datetime, price, eco, seats_left, status
+                FROM trips
+                WHERE status IN ("active", "planned")';
+        $params = [];
 
-        // Filtres de recherche
         if (!empty($departure)) {
-            $queryBuilder->andWhere('LOWER(r.origin) LIKE LOWER(:departure)')
-                ->setParameter('departure', '%' . $departure . '%');
+            $sql .= ' AND LOWER(departure_city) LIKE LOWER(:departure)';
+            $params['departure'] = '%' . $departure . '%';
         }
 
         if (!empty($destination)) {
-            $queryBuilder->andWhere('LOWER(r.destination) LIKE LOWER(:destination)')
-                ->setParameter('destination', '%' . $destination . '%');
+            $sql .= ' AND LOWER(arrival_city) LIKE LOWER(:destination)';
+            $params['destination'] = '%' . $destination . '%';
         }
 
         if ($departureDate) {
-            $queryBuilder->andWhere('r.departureDate = :departureDate')
-                ->setParameter('departureDate', new \DateTime($departureDate));
+            $sql .= ' AND DATE(departure_datetime) = :departureDate';
+            $params['departureDate'] = $departureDate;
         }
 
         if ($passengers) {
-            $queryBuilder->andWhere('r.availableSeats >= :passengers')
-                ->setParameter('passengers', $passengers);
+            $sql .= ' AND seats_left >= :passengers';
+            $params['passengers'] = (int) $passengers;
         }
 
-        $rides = $queryBuilder->getQuery()->getResult();
+        $sql .= ' ORDER BY departure_datetime ASC';
 
-        // Formater les résultats
-        $ridesData = array_map(function (Ride $ride) {
-            return $this->formatRideData($ride);
-        }, $rides);
+        $rows = $this->db->fetchAllAssociative($sql, $params);
+
+        // Formater les résultats au format attendu par le front
+        $ridesData = array_map(function (array $row) {
+            return $this->formatTripRow($row);
+        }, $rows);
 
         return $this->json([
             'success' => true,
-            'message' => count($rides) . ' trajet' . (count($rides) > 1 ? 's' : '') . ' trouvé' . (count($rides) > 1 ? 's' : ''),
+            'message' => count($rows) . ' trajet' . (count($rows) > 1 ? 's' : '') . ' trouvé' . (count($rows) > 1 ? 's' : ''),
             'rides' => $ridesData,
-            'total' => count($rides)
+            'total' => count($rows)
         ]);
     }
 
