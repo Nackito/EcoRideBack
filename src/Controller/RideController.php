@@ -282,6 +282,80 @@ class RideController extends AbstractController
         return $this->json($this->formatTripRow($row));
     }
 
+    #[Route('/{id}/book', name: 'book', methods: ['POST'])]
+    public function book(int $id, Request $request): JsonResponse
+    {
+        // Auth basique via token Bearer
+        $authHeader = $request->headers->get('Authorization');
+        if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+            return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+        }
+        $token = substr($authHeader, 7);
+        $decoded = base64_decode($token);
+        $parts = explode(':', $decoded);
+        if (count($parts) < 3) {
+            return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+        }
+        $passengerId = (int) $parts[0];
+
+        try {
+            $trip = $this->db->fetchAssociative(
+                'SELECT id, driver_id, departure_datetime, seats_left, status FROM trips WHERE id = :id',
+                ['id' => $id]
+            );
+
+            if (!$trip) {
+                return $this->json(['error' => 'Trajet introuvable'], Response::HTTP_NOT_FOUND);
+            }
+
+            // Empêcher l'auto-réservation
+            if ((int)$trip['driver_id'] === $passengerId) {
+                return $this->json(['error' => 'Vous ne pouvez pas réserver votre propre trajet'], Response::HTTP_BAD_REQUEST);
+            }
+
+            // Statut autorisé
+            $status = (string)($trip['status'] ?? '');
+            if (!in_array($status, ['active', 'planned'], true)) {
+                return $this->json(['error' => 'Ce trajet n\'est pas réservable'], Response::HTTP_BAD_REQUEST);
+            }
+
+            // Date future
+            $dep = new \DateTime((string)$trip['departure_datetime']);
+            if ($dep <= new \DateTime()) {
+                return $this->json(['error' => 'Ce trajet est déjà parti'], Response::HTTP_BAD_REQUEST);
+            }
+
+            $seatsLeft = (int)($trip['seats_left'] ?? 0);
+            if ($seatsLeft <= 0) {
+                return $this->json(['error' => 'Plus de places disponibles'], Response::HTTP_CONFLICT);
+            }
+
+            // Réserver 1 place: décrément atomique
+            $affected = $this->db->executeStatement(
+                'UPDATE trips SET seats_left = seats_left - 1 WHERE id = :id AND seats_left > 0',
+                ['id' => $id]
+            );
+
+            if ($affected < 1) {
+                return $this->json(['error' => 'Réservation impossible, plus de places'], Response::HTTP_CONFLICT);
+            }
+
+            $updated = $this->db->fetchAssociative('SELECT seats_left FROM trips WHERE id = :id', ['id' => $id]);
+
+            return $this->json([
+                'success' => true,
+                'message' => 'Demande de réservation envoyée',
+                'rideId' => $id,
+                'seatsLeft' => isset($updated['seats_left']) ? (int)$updated['seats_left'] : null,
+            ], Response::HTTP_OK);
+        } catch (\Exception $e) {
+            return $this->json([
+                'error' => 'Erreur lors de la réservation',
+                'details' => $e->getMessage(),
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+    }
+
     #[Route('', name: 'create', methods: ['POST'])]
     #[OA\Post(
         path: '/api/rides',
