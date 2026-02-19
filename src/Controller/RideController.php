@@ -550,6 +550,144 @@ class RideController extends AbstractController
         }
     }
 
+    #[Route('/passenger/requests', name: 'passenger_requests', methods: ['GET'])]
+    public function passengerBookingRequests(Request $request): JsonResponse
+    {
+        $authHeader = $request->headers->get('Authorization');
+        if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+            return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+        }
+        $token = substr($authHeader, 7);
+        $decoded = base64_decode($token);
+        $parts = explode(':', $decoded);
+        if (count($parts) < 3) {
+            return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+        }
+        $passengerId = (int) $parts[0];
+
+        try {
+            $this->ensureBookingRequestsTable();
+
+            $rows = $this->db->fetchAllAssociative(
+                'SELECT br.id, br.trip_id, br.seats_requested, br.status, br.created_at, br.updated_at, br.responded_at,
+                        br.response_message,
+                        t.driver_id, t.departure_city, t.arrival_city, t.departure_datetime, t.arrival_datetime, t.price, t.status AS trip_status,
+                        u.pseudo AS driver_pseudo, u.email AS driver_email
+                 FROM booking_requests br
+                 INNER JOIN trips t ON t.id = br.trip_id
+                 INNER JOIN users u ON u.id = t.driver_id
+                 WHERE br.passenger_id = :pid
+                 ORDER BY br.created_at DESC',
+                ['pid' => $passengerId]
+            );
+
+            $now = new \DateTimeImmutable();
+            $data = array_map(function (array $r) use ($now) {
+                $dep = !empty($r['departure_datetime']) ? new \DateTimeImmutable((string)$r['departure_datetime']) : null;
+                $isFuture = $dep ? ($dep > $now) : false;
+                $status = (string)($r['status'] ?? '');
+                $canCancel = in_array($status, ['pending', 'accepted'], true) && $isFuture;
+
+                $r['can_cancel'] = $canCancel;
+                return $r;
+            }, $rows);
+
+            return $this->json([
+                'success' => true,
+                'requests' => $data,
+                'total' => count($data),
+            ]);
+        } catch (\Exception $e) {
+            return $this->json([
+                'error' => 'Erreur lors de la récupération des demandes passager',
+                'details' => $e->getMessage(),
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    #[Route('/passenger/requests/{requestId}/cancel', name: 'passenger_request_cancel', requirements: ['requestId' => '\\d+'], methods: ['POST'])]
+    public function cancelPassengerBookingRequest(int $requestId, Request $request): JsonResponse
+    {
+        $authHeader = $request->headers->get('Authorization');
+        if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+            return $this->json(['error' => 'Token manquant'], Response::HTTP_UNAUTHORIZED);
+        }
+        $token = substr($authHeader, 7);
+        $decoded = base64_decode($token);
+        $parts = explode(':', $decoded);
+        if (count($parts) < 3) {
+            return $this->json(['error' => 'Token invalide'], Response::HTTP_UNAUTHORIZED);
+        }
+        $passengerId = (int) $parts[0];
+
+        try {
+            $this->ensureBookingRequestsTable();
+
+            $row = $this->db->fetchAssociative(
+                'SELECT br.id, br.trip_id, br.passenger_id, br.seats_requested, br.status,
+                        t.departure_datetime
+                 FROM booking_requests br
+                 INNER JOIN trips t ON t.id = br.trip_id
+                 WHERE br.id = :id',
+                ['id' => $requestId]
+            );
+
+            if (!$row) {
+                return $this->json(['error' => 'Demande introuvable'], Response::HTTP_NOT_FOUND);
+            }
+            if ((int)$row['passenger_id'] !== $passengerId) {
+                return $this->json(['error' => 'Accès refusé'], Response::HTTP_FORBIDDEN);
+            }
+
+            $status = (string)($row['status'] ?? '');
+            if (!in_array($status, ['pending', 'accepted'], true)) {
+                return $this->json(['error' => 'Cette demande ne peut plus être annulée'], Response::HTTP_BAD_REQUEST);
+            }
+
+            $dep = new \DateTimeImmutable((string)$row['departure_datetime']);
+            if ($dep <= new \DateTimeImmutable()) {
+                return $this->json(['error' => 'Impossible d\'annuler une demande: le covoiturage a déjà démarré'], Response::HTTP_BAD_REQUEST);
+            }
+
+            $now = (new \DateTimeImmutable())->format('Y-m-d H:i:s');
+            $this->db->beginTransaction();
+            try {
+                // Si déjà acceptée, restituer les places au trajet
+                if ($status === 'accepted') {
+                    $this->db->executeStatement(
+                        'UPDATE trips SET seats_left = seats_left + :n WHERE id = :tripId',
+                        [
+                            'n' => (int)($row['seats_requested'] ?? 1),
+                            'tripId' => (int)$row['trip_id'],
+                        ]
+                    );
+                }
+
+                $this->db->update('booking_requests', [
+                    'status' => 'cancelled',
+                    'updated_at' => $now,
+                    'responded_at' => $now,
+                    'response_message' => 'Annulée par le passager',
+                ], ['id' => $requestId]);
+
+                $this->db->commit();
+            } catch (\Throwable $e) {
+                $this->db->rollBack();
+                throw $e;
+            }
+
+            return $this->json([
+                'success' => true,
+                'message' => 'Demande annulée',
+            ]);
+        } catch (\Exception $e) {
+            return $this->json([
+                'error' => 'Erreur lors de l\'annulation de la demande',
+                'details' => $e->getMessage(),
+            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+    }
+
     #[Route('', name: 'create', methods: ['POST'])]
     #[OA\Post(
         path: '/api/rides',
